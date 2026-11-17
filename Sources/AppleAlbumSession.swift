@@ -95,7 +95,7 @@ private struct AppleAlbumSession {
                   sendTo androidTarget: String?, receiveFrom androidSource: String?, allowICloud: Bool,
                   progress: @escaping (TransferStatus) -> Void) async throws -> String {
         guard androidTarget != nil || androidSource != nil else { throw MediaError193.malformed }
-        guard !album.isLibraryScope || androidSource == nil else { throw MediaError193.unavailable }
+        guard album.identifier != PhotoSyncLibrary.Album.recent.identifier || androidSource == nil else { throw MediaError193.unavailable }
         let library = PhotoSyncLibrary(storage: storage)
         var source: PhotoAlbumSource?
         if androidTarget != nil {
@@ -294,7 +294,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         address.keyboardType = .numbersAndPunctuation
         address.autocorrectionType = .no
         androidAlbum.placeholder = "Android 相册名称"
-        direction.selectedSegmentIndex = 0
+        direction.selectedSegmentIndex = 2
         for field in [address, androidAlbum] {
             field.borderStyle = .roundedRect
             field.heightAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
@@ -698,8 +698,9 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         chosen = value
         album.configuration?.title = value.title
         manage.isHidden = value.isLibraryScope
-        if value.isLibraryScope { direction.selectedSegmentIndex = 0 }
-        direction.isEnabled = !value.isLibraryScope
+        let recentOnly = value.identifier == PhotoSyncLibrary.Album.recent.identifier
+        if recentOnly { direction.selectedSegmentIndex = 0 }
+        direction.isEnabled = !recentOnly
     }
 
     @objc private func manageAlbum() {
@@ -777,7 +778,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
             status.text = "请选择 iOS 相册并填写 Android 相册名称。"
             return
         }
-        let selectedDirection = selected.isLibraryScope ? 0 : direction.selectedSegmentIndex, cloud = useCloud.isOn
+        let selectedDirection = selected.identifier == PhotoSyncLibrary.Album.recent.identifier ? 0 : direction.selectedSegmentIndex, cloud = useCloud.isOn
         scopeChanged()
         task(keepsScreenAwake: true) {
             let session = AppleAlbumSession(storage: self.storage, lease: try self.storage.resourceLease193())

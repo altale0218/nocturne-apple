@@ -34,6 +34,9 @@ struct Preferences: Codable {
     var viewerBackgroundAll122: Bool?
     var squareTiles193: Bool?
     var roundedSquare193: Bool?
+    var groupDates199: Bool?
+    var swipeDismiss199: Bool?
+    var sortGallery199: Int?
     var biometricAsked193: Bool?
     var sourceScope193: String?
     var squareTiles: Bool { squareTiles193 ?? true }
@@ -112,7 +115,7 @@ final class SessionClock {
     }
 }
 enum Release {
-    static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.5.16"
+    static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.5.17"
     static var notes: String { "Nocturne \(version) · Apple 开发预览\n\n同一局域网的连接暂时中断时，在已确认的相册范围内重新连接原配对设备。同步期间继续显示相册总容量和核对进度，传输速度会随实际数据调整。\n\n继续逐一核验原片和动态照片资源。相册访问、iCloud 下载与删除仍各自需要用户授权。" }
 }
 enum Strings {

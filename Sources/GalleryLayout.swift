@@ -8,6 +8,9 @@ final class GalleryLayout: UICollectionViewLayout {
     var ratios: [CGFloat] = [] { didSet { invalidateLayout() } }
     var square = true { didSet { if oldValue != square { invalidateLayout() } } }
     var names = true { didSet { invalidateLayout() } }
+    static let dayHeader = "capture-day"
+    var dayStarts: [Int: String] = [:] { didSet { if oldValue != dayStarts { invalidateLayout() } } }
+    private var headers: [Int: UICollectionViewLayoutAttributes] = [:]
     private var cached: [UICollectionViewLayoutAttributes] = []
     private var prefixBottom: [CGFloat] = []
     private var rowTop: [CGFloat] = []
@@ -18,22 +21,36 @@ final class GalleryLayout: UICollectionViewLayout {
     override func prepare() {
         guard let collection = collectionView else { return }
         let available = max(1, collection.bounds.width - collection.adjustedContentInset.left - collection.adjustedContentInset.right)
-        let fingerprint = "\(mode.rawValue)/\(sizePreset)/\(square)/\(names)/\(ratios.hashValue)"
+        let fingerprint = "\(mode.rawValue)/\(sizePreset)/\(square)/\(names)/\(ratios.hashValue)/\(dayStarts.hashValue)"
         guard width != available || key != fingerprint else { return }
-        width = available; key = fingerprint; cached.removeAll(keepingCapacity: true); prefixBottom.removeAll(keepingCapacity: true); rowTop.removeAll(keepingCapacity: true)
+        width = available; key = fingerprint; cached.removeAll(keepingCapacity: true); prefixBottom.removeAll(keepingCapacity: true); rowTop.removeAll(keepingCapacity: true); headers.removeAll(keepingCapacity: true)
         let gap: CGFloat = 10, padding: CGFloat = 12, footer: CGFloat = names ? 28 : 0
         let inner = max(1, available - padding * 2)
         let columns = GalleryRules122.columns(width: Double(inner), preset: sizePreset)
         func ratio(_ i: Int) -> CGFloat { square ? 1 : max(0.1, min(10, ratios[i])) }
+        let boundaries = dayStarts.keys.sorted() + [ratios.count]
+        var boundary = dayStarts[0] == nil ? 0 : 1
+        func beginDay(_ item: Int, _ y: CGFloat) -> CGFloat {
+            guard dayStarts[item] != nil else { return y }
+            let attr = UICollectionViewLayoutAttributes(forSupplementaryViewOfKind: Self.dayHeader, with: IndexPath(item: item, section: 0))
+            attr.frame = CGRect(x: padding, y: y, width: inner, height: 30)
+            headers[item] = attr
+            return y + 34
+        }
         if mode == .tiles {
             var y: CGFloat = padding, index = 0
             while index < ratios.count {
-                let count = square ? min(columns, ratios.count - index) : GalleryRules122.rowCount(remaining: ratios.count - index, columns: columns)
+                y = beginDay(index, y)
+                while boundaries[boundary] <= index { boundary += 1 }
+                let remaining = boundaries[boundary] - index
+                let count = min(columns, remaining)
                 let end = index + count, sum = (index..<end).reduce(CGFloat(0)) { $0 + ratio($1) }
-                let height = square ? max(1, (inner - CGFloat(columns - 1) * gap) / CGFloat(columns)) : max(1, (inner - CGFloat(count - 1) * gap) / sum)
+                let gridHeight = max(1, (inner - CGFloat(columns - 1) * gap) / CGFloat(columns))
+                let fitting = max(1, (inner - CGFloat(count - 1) * gap) / sum)
+                let height = square ? gridHeight : count < columns ? min(gridHeight, fitting) : fitting
                 var x = padding
                 for item in index..<end {
-                    let w = square ? height : (item == end - 1 ? padding + inner - x : height * ratio(item))
+                    let w = square ? height : (count == columns && item == end - 1 ? padding + inner - x : height * ratio(item))
                     append(item, CGRect(x: x, y: y, width: w, height: height + footer), row: y)
                     x += w + gap
                 }
@@ -45,6 +62,7 @@ final class GalleryLayout: UICollectionViewLayout {
             let columnWidth = max(1, (inner - CGFloat(columns - 1) * gap) / CGFloat(columns))
             var bottoms = Array(repeating: padding, count: columns)
             for item in ratios.indices {
+                if dayStarts[item] != nil { let y = beginDay(item, bottoms.max() ?? padding); bottoms = Array(repeating: y, count: columns) }
                 let column = bottoms.indices.min { bottoms[$0] < bottoms[$1] }!
                 let y = bottoms[column], height = columnWidth / ratio(item) + footer
                 append(item, CGRect(x: padding + CGFloat(column) * (columnWidth + gap), y: y, width: columnWidth, height: height), row: y)
@@ -62,12 +80,25 @@ final class GalleryLayout: UICollectionViewLayout {
         var lo = 0, hi = cached.count
         while lo < hi { let middle = (lo + hi) / 2; if prefixBottom[middle] < rect.minY - 350 { lo = middle + 1 } else { hi = middle } }
         var result: [UICollectionViewLayoutAttributes] = []
-        for item in lo..<cached.count { let a = cached[item]; if rowTop[item] > rect.maxY + 350 { break }; if a.frame.intersects(rect.insetBy(dx: -20, dy: -350)) { result.append(a) } }
+        for item in lo..<cached.count { let a = cached[item]; if rowTop[item] > rect.maxY + 350 { break }; if let header = headers[item], header.frame.intersects(rect.insetBy(dx: 0, dy: -350)) { result.append(header) }; if a.frame.intersects(rect.insetBy(dx: -20, dy: -350)) { result.append(a) } }
         return result
     }
+    override func layoutAttributesForSupplementaryView(ofKind elementKind: String, at indexPath: IndexPath) -> UICollectionViewLayoutAttributes? { headers[indexPath.item] }
     override func layoutAttributesForItem(at indexPath: IndexPath) -> UICollectionViewLayoutAttributes? { indexPath.item < cached.count ? cached[indexPath.item] : nil }
     override func shouldInvalidateLayout(forBoundsChange newBounds: CGRect) -> Bool { collectionView?.bounds.width != newBounds.width }
 }
+final class CaptureDayHeader199: UICollectionReusableView {
+    let title = UILabel()
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        title.frame = bounds; title.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        title.font = .preferredFont(forTextStyle: .headline)
+        title.accessibilityTraits = .header
+        addSubview(title)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+}
+
 final class MediaCell: UICollectionViewCell {
     static let reuse = "media"
     let image = UIImageView(), name = UILabel(), facts = UILabel(), videoIcon = UILabel()
@@ -91,6 +122,7 @@ final class MediaCell: UICollectionViewCell {
         contentView.addSubview(name); contentView.addSubview(facts); contentView.addSubview(videoIcon)
         if #available(iOS 13, *) { protectedBadge193.image = UIImage(systemName: "shield") }; protectedBadge193.tintColor = Theme.blue; protectedBadge193.contentMode = .scaleAspectFit; contentView.addSubview(protectedBadge193)
         selectionBadge193.textColor = .white; selectionBadge193.textAlignment = .center; selectionBadge193.font = .systemFont(ofSize: 16, weight: .semibold); selectionBadge193.layer.cornerRadius = 12; selectionBadge193.clipsToBounds = true; selectionBadge193.isHidden = true; contentView.addSubview(selectionBadge193)
+        protectedBadge193.isHidden = true
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     func selection193(active: Bool, selected: Bool) {

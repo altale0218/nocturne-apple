@@ -31,6 +31,15 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
     private var holding = false, holdLocked = false, holdOriginLocked = false
     private var baseRate: Float = 1, basePlaying = true
     private var paging = false
+    private weak var liveButton199: UIButton?
+    private var liveStop199: DispatchWorkItem?
+    private let stripFeedback199 = UISelectionFeedbackGenerator()
+    private var swipeDown199 = false
+    private var closing199 = false
+    var addPrivate199: ((UIViewController, MediaAsset193) -> Void)?
+    var openingFrame199: CGRect?
+    var openingImage199: UIImage?
+    var returnFrame199: ((String, UIView) -> CGRect?)?
     init(assets: [MediaAsset193], selected: Int, repository: PhotoRepository, storage: SecureStorage, clock: SessionClock, initialPreviewReady: Bool = false) {
         self.assets = assets; self.selected = selected; self.repository = repository; self.storage = storage; self.clock = clock; self.initialPreviewReady = initialPreviewReady
         super.init(nibName: nil, bundle: nil)
@@ -40,10 +49,11 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
     override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .black
-        backdrop.contentMode = .scaleAspectFill; backdrop.clipsToBounds = true; backdrop.alpha = 0.55
+        view.backgroundColor = UIColor(white: 0.13, alpha: 1)
+        modalPresentationCapturesStatusBarAppearance = true
+        backdrop.contentMode = .scaleAspectFill; backdrop.clipsToBounds = true; backdrop.alpha = 0.85
         view.addSubview(backdrop); blur.isHidden = true
-        zoom.minimumZoomScale = 1; zoom.maximumZoomScale = 8; zoom.delegate = self; zoom.showsHorizontalScrollIndicator = false; zoom.showsVerticalScrollIndicator = false
+        zoom.contentInsetAdjustmentBehavior = .never; zoom.minimumZoomScale = 1; zoom.maximumZoomScale = 8; zoom.delegate = self; zoom.showsHorizontalScrollIndicator = false; zoom.showsVerticalScrollIndicator = false
         zoom.addSubview(media); image.contentMode = .scaleAspectFit; precision.contentMode = .scaleAspectFit; precision.isHidden = true
         media.addSubview(image); media.layer.addSublayer(playerLayer); playerLayer.videoGravity = .resizeAspect; media.addSubview(precision); live193.contentMode = .scaleAspectFit; live193.alpha = 0; live193.isUserInteractionEnabled = false; media.addSubview(live193)
         stage.addSubview(zoom); view.addSubview(stage)
@@ -57,7 +67,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         dateLabel.font = .systemFont(ofSize: 11, weight: .medium); dateLabel.textColor = UIColor(white: 1, alpha: 0.75); controls.addSubview(dateLabel)
         timeline.framesPerSecond = { [weak self] in self?.frameRate ?? 30 }
         timeline.finePixels = storage.state.settings.finePixels
-        controls.backgroundColor = UIColor(white: 0, alpha: 0.12)
+        controls.backgroundColor = .clear
         timeline.minimumValue = 0; timeline.minimumTrackTintColor = Theme.blue; timeline.maximumTrackTintColor = UIColor(white: 1, alpha: 0.20)
         timeline.onBegin = { [weak self] in self?.beginSeek() }; timeline.addTarget(self, action: #selector(changeSeek), for: .valueChanged)
         timeline.addTarget(self, action: #selector(endSeek), for: [.touchUpInside, .touchUpOutside, .touchCancel]); controls.addSubview(timeline)
@@ -66,7 +76,16 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         let speed = Theme.button("speedometer", target: self, action: #selector(speedMenu)), mark = Theme.button("scope", target: self, action: #selector(toggleMark))
         play = Theme.button("pause.fill", target: self, action: #selector(togglePlayback)); favorite = Theme.button("heart", target: self, action: #selector(toggleFavorite))
         jump = Theme.button("bookmark.fill", target: self, action: #selector(jumpToMark))
-        for button in [speed, mark, play!, jump!, favorite!] { button.backgroundColor = UIColor(white: 1, alpha: 0.10); button.layer.cornerRadius = 14; button.tintColor = .white; actions.addArrangedSubview(button) }
+        for button in [speed, mark, play!, jump!] { button.backgroundColor = UIColor(white: 1, alpha: 0.10); button.layer.cornerRadius = 14; button.tintColor = .white; actions.addArrangedSubview(button) }
+        let live = Theme.button("livephoto", target: self, action: #selector(toggleLive199))
+        live.accessibilityLabel = "播放实况照片"
+        liveButton199 = live
+        for button in [live, favorite!] {
+            button.backgroundColor = UIColor(white: 0.15, alpha: 0.46)
+            button.layer.cornerRadius = 19
+            button.tintColor = .white
+            chrome.addSubview(button)
+        }
         controls.addSubview(actions); view.addSubview(controls)
         let stripLayout = UICollectionViewFlowLayout(); stripLayout.scrollDirection = .horizontal; stripLayout.minimumLineSpacing = 5; stripLayout.itemSize = CGSize(width: 48, height: 60)
         strip = UICollectionView(frame: .zero, collectionViewLayout: stripLayout); strip.backgroundColor = .clear; strip.dataSource = self; strip.delegate = self; strip.showsHorizontalScrollIndicator = false; strip.decelerationRate = .fast
@@ -88,26 +107,32 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         timeline.frame = CGRect(x: 18, y: 20, width: width - 36, height: 32)
         actions.frame = CGRect(x: 12, y: 56, width: width - 24, height: 40)
         strip.frame = CGRect(x: 0, y: 102, width: width, height: 56)
-        if let flow = strip.collectionViewLayout as? UICollectionViewFlowLayout { flow.sectionInset = UIEdgeInsets(top: 0, left: max(0, width / 2 - 24), bottom: 0, right: max(0, width / 2 - 24)) }
+        strip.contentInsetAdjustmentBehavior = .never
+        if let flow = strip.collectionViewLayout as? UICollectionViewFlowLayout {
+            let inset = UIEdgeInsets(top: 0, left: max(0, width / 2 - 24), bottom: 0, right: max(0, width / 2 - 24))
+            if flow.sectionInset != inset { flow.sectionInset = inset }
+        }
         stage.frame = CGRect(x: safe.left, y: safe.top, width: width, height: max(1, (controls.isHidden ? view.bounds.height - safe.bottom : controls.frame.minY + 20) - safe.top))
         backdrop.frame = view.bounds; blur.frame = stage.bounds; blur.alpha = CGFloat(max(0, min(1, storage.state.settings.blurRadius / 48))); zoom.frame = stage.bounds
         if zoom.zoomScale == 1 { media.frame = zoom.bounds; zoom.contentSize = media.bounds.size }
         image.frame = media.bounds; precision.frame = media.bounds; live193.frame = media.bounds; playerLayer.frame = media.bounds
         chrome.frame = CGRect(x: 0, y: 0, width: width, height: 64)
-        chrome.subviews.last?.frame = CGRect(x: width - 60, y: 8, width: 48, height: 48)
+        moreButton193?.frame = CGRect(x: width - 60, y: 8, width: 48, height: 48)
+        favorite.frame = CGRect(x: width - 112, y: 8, width: 48, height: 48)
+        liveButton199?.frame = CGRect(x: width - 164, y: 8, width: 48, height: 48)
         facts.frame = CGRect(x: width * 0.44, y: 0, width: width * 0.56 - 12, height: 20)
         dateLabel.frame = CGRect(x: 12, y: 0, width: width * 0.44 - 20, height: 20)
         speedHint.frame = CGRect(x: max(safe.left + 12, view.bounds.midX - 130), y: max(safe.top + 70, controls.frame.minY - 42), width: min(260, width - 24), height: 32)
         updateMark()
     }
-    private func show(_ index: Int, count: Bool = true) {
+    private func show(_ index: Int, count: Bool = true, centerStrip: Bool = true) {
         guard assets.indices.contains(index) else { return }
         generation += 1; let token = generation; selected = index; fullReady193 = false
         holding = false; holdLocked = false; speedHint.isHidden = true; rate = baseRate; media.transform = .identity
         stopPlayer(); repository.manager.cancelImageRequest(request)
-        zoom.setZoomScale(1, animated: false); image.image = nil; precision.image = nil; precision.isHidden = true
+        zoom.setZoomScale(1, animated: false); image.image = count ? nil : openingImage199; precision.image = nil; precision.isHidden = true
         let asset = assets[index], id = asset.localIdentifier
-        if count { storage.update { state in var record = state.records[id] ?? MediaRecord(); record.viewed(); state.records[id] = record }; try? storage.save() }
+        if count { storage.update { state in var record = state.records[id] ?? MediaRecord(); record.viewed(); state.records[id] = record } }
         repository.thumbnail(asset) { [weak self] thumb in guard let self = self, self.generation == token else { return }; if !self.fullReady193 { self.image.image = thumb }
             if let thumb = thumb {
                 let radius = self.storage.state.settings.blurRadius
@@ -117,7 +142,8 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
                 }
             } }
         let video = asset.mediaType == .video
-        timeline.isHidden = !video; play.isEnabled = video; actions.arrangedSubviews[0].isHidden = !video; actions.arrangedSubviews[1].isHidden = !video; jump.isHidden = !video
+        liveButton199?.isHidden = !asset.mediaSubtypes.contains(.photoLive)
+        timeline.isHidden = !video; play.isHidden = !video; actions.arrangedSubviews[0].isHidden = !video; actions.arrangedSubviews[1].isHidden = !video; jump.isHidden = !video
         if video {
             request = repository.video(asset) { [weak self] item in
                 guard let self = self, self.generation == token, let item = item else { return }
@@ -142,7 +168,14 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         }
         let preloadScale = view.window?.screen.scale ?? UIScreen.main.scale
         repository.prefetchAdjacent193(assets, selected: index, size: CGSize(width: max(600, stage.bounds.width * preloadScale), height: max(600, stage.bounds.height * preloadScale)))
-        strip.reloadData(); strip.layoutIfNeeded(); strip.scrollToItem(at: IndexPath(item: index, section: 0), at: .centeredHorizontally, animated: false)
+        if centerStrip {
+            strip.reloadData(); strip.layoutIfNeeded()
+            if strip.bounds.width > 0 { strip.scrollToItem(at: IndexPath(item: index, section: 0), at: .centeredHorizontally, animated: false) }
+        } else {
+            for case let cell as MediaCell in strip.visibleCells {
+                cell.layer.borderWidth = strip.indexPath(for: cell)?.item == index ? 2 : 0
+            }
+        }
         updateFacts(); updatePlayIcon(); updateMark(); updateNativeMenu193(); activate()
     }
     private func updateFacts() {
@@ -287,6 +320,11 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
             let alert = UIAlertController(title: "私密相册", message: note, preferredStyle: .alert); alert.addAction(UIAlertAction(title: "好", style: .default)); self.present(alert, animated: true)
         }
     }
+    private func addToPrivate199() {
+        guard let add = addPrivate199, assets.indices.contains(selected), assets[selected].native != nil,
+              !storage.envelope.privateMode else { return }
+        add(self, assets[selected])
+    }
     private func updateNativeMenu193() {
         guard let button = moreButton193 else { return }
         if #available(iOS 13, *) {
@@ -295,8 +333,16 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         }
         if #available(iOS 14, *) {
             var entries: [UIMenuElement] = []
+            if assets[selected].native != nil && !storage.envelope.privateMode && addPrivate199 != nil {
+                entries.append(UIAction(title: "加入 Private（保留原片）", image: UIImage(systemName: "lock.shield")) { [weak self] _ in self?.addToPrivate199() })
+            }
             if assets[selected].encrypted != nil { entries.append(UIAction(title: "移出到系统相册", image: UIImage(systemName: "square.and.arrow.up")) { [weak self] _ in self?.restorePrivate193() }) }
             if assets[selected].native != nil && storage.envelope.privateMode { entries.append(UIAction(title: "转入私密相册并删除系统原片", image: UIImage(systemName: "lock.shield")) { [weak self] _ in self?.movePrivate193() }) }
+            entries.append(UIAction(title: "下滑退出查看器", image: UIImage(systemName: "arrow.down"), state: (storage.state.settings.swipeDismiss199 ?? true) ? .on : .off) { [weak self] _ in
+                guard let self = self else { return }
+                self.storage.update { $0.settings.swipeDismiss199 = !($0.settings.swipeDismiss199 ?? true) }
+                try? self.storage.save(); self.updateNativeMenu193()
+            })
             entries.append(UIAction(title: "显示／隐藏控制栏", image: UIImage(systemName: "rectangle.expand.vertical")) { [weak self] _ in self?.toggleControls() })
             if assets[selected].mediaType == .video, storage.state.records[assets[selected].localIdentifier]?.mark != nil { entries.append(UIAction(title: "跳转标点", image: UIImage(systemName: "bookmark")) { [weak self] _ in self?.jumpToMark() }) }
             entries.append(UIAction(title: assets[selected].encrypted == nil ? "删除系统原片" : "删除加密项目", image: UIImage(systemName: "trash"), attributes: .destructive) { [weak self] _ in self?.deleteOriginal() })
@@ -305,6 +351,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
     }
     @objc private func menu() {
         let alert = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
+        if assets[selected].native != nil && !storage.envelope.privateMode && addPrivate199 != nil { alert.addAction(UIAlertAction(title: "加入 Private（保留原片）", style: .default) { [weak self] _ in self?.addToPrivate199() }) }
         if assets[selected].encrypted != nil { alert.addAction(UIAlertAction(title: "移出到系统相册", style: .default) { [weak self] _ in self?.restorePrivate193() }) }
         if assets[selected].native != nil && storage.envelope.privateMode { alert.addAction(UIAlertAction(title: "转入私密相册并删除系统原片", style: .default) { [weak self] _ in self?.movePrivate193() }) }
         if let mark = storage.state.records[assets[selected].localIdentifier]?.mark { alert.addAction(UIAlertAction(title: Strings.text("跳转标点", "Jump to bookmark", "マークへ移動", "跳轉標點") + " · " + time(mark), style: .default) { [weak self] _ in guard let self = self else { return }; self.timeline.value = Float(mark); self.beginSeek(); self.changeSeek(); self.endSeek() }) }
@@ -330,15 +377,32 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
     func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
         if gesture is UIPanGestureRecognizer {
             let velocity = (gesture as! UIPanGestureRecognizer).velocity(in: zoom)
-            return zoom.zoomScale <= 1.01 && abs(velocity.x) > abs(velocity.y) && !dragging
+            return zoom.zoomScale <= 1.01 && !dragging && (abs(velocity.x) > abs(velocity.y) || (velocity.y > 0 && (storage.state.settings.swipeDismiss199 ?? true)))
         }
-        if gesture is UILongPressGestureRecognizer { return assets[selected].mediaType == .video && (storage.state.settings.holdSpeed122 ?? true) && !dragging }
+        if gesture is UILongPressGestureRecognizer { return !dragging && (assets[selected].mediaSubtypes.contains(.photoLive) || (assets[selected].mediaType == .video && (storage.state.settings.holdSpeed122 ?? true))) }
         return true
     }
     @objc private func pageSwipe(_ gesture: UIPanGestureRecognizer) {
         guard !holding else { return }
         let dx = gesture.translation(in: zoom).x, width = max(1, zoom.bounds.width)
-        if gesture.state == .began { paging = true; fade?.cancel() }
+        if gesture.state == .began {
+            paging = true; fade?.cancel()
+            let v = gesture.velocity(in: zoom)
+            swipeDown199 = v.y > abs(v.x) && (storage.state.settings.swipeDismiss199 ?? true)
+        }
+        if swipeDown199 {
+            let dy = max(0, gesture.translation(in: zoom).y)
+            if gesture.state == .changed && !storage.state.settings.reducedMotion {
+                let scale = max(0.72, 1 - dy / 780)
+                media.transform = CGAffineTransform(translationX: dx * 0.30, y: dy).scaledBy(x: scale, y: scale)
+            }
+            if gesture.state == .ended || gesture.state == .cancelled {
+                paging = false; swipeDown199 = false
+                if gesture.state == .ended && (dy > 95 || gesture.velocity(in: zoom).y > 640) { close() }
+                else { UIView.animate(withDuration: storage.state.settings.reducedMotion ? 0 : 0.22) { self.media.transform = .identity } }
+            }
+            return
+        }
         if gesture.state == .changed { media.transform = CGAffineTransform(translationX: dx * ((selected == 0 && dx > 0) || (selected == assets.count - 1 && dx < 0) ? 0.25 : 1), y: 0) }
         if gesture.state == .ended || gesture.state == .cancelled {
             let destination = selected + (dx < 0 ? 1 : -1)
@@ -373,10 +437,67 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
             updatePlayIcon(); activate()
         }
     }
-    @objc private func close() { generation += 1; stopPlayer(); repository.manager.cancelImageRequest(request); try? storage.save(); dismiss(animated: !storage.state.settings.reducedMotion) }
+    private func mediaFrame199() -> CGRect {
+        guard assets.indices.contains(selected) else { return .zero }
+        let item = assets[selected]
+        let size = CGSize(width: max(1, item.pixelWidth), height: max(1, item.pixelHeight))
+        return media.convert(AVMakeRect(aspectRatio: size, insideRect: media.bounds), to: view)
+    }
+    private func ghost199(_ photo: UIImage, at frame: CGRect) -> UIImageView {
+        let ghost = UIImageView(image: photo)
+        ghost.contentMode = .scaleAspectFill; ghost.clipsToBounds = true
+        ghost.frame = frame; ghost.layer.cornerRadius = 10; view.addSubview(ghost)
+        return ghost
+    }
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        if strip.bounds.width > 0, assets.indices.contains(selected) {
+            strip.scrollToItem(at: IndexPath(item: selected, section: 0), at: .centeredHorizontally, animated: false)
+        }
+        guard let photo = openingImage199, let origin = openingFrame199,
+              let window = view.window, !storage.state.settings.reducedMotion else { return }
+        openingImage199 = nil; openingFrame199 = nil
+        let end = mediaFrame199(), ghost = ghost199(photo, at: view.convert(origin, from: window))
+        media.alpha = 0; chrome.alpha = 0; controls.alpha = 0
+        UIView.animate(withDuration: 0.34, delay: 0, usingSpringWithDamping: 0.87, initialSpringVelocity: 0, options: [.allowUserInteraction], animations: {
+            ghost.frame = end; ghost.layer.cornerRadius = 0
+            self.chrome.alpha = 1; self.controls.alpha = 1
+        }) { _ in self.media.alpha = 1; ghost.removeFromSuperview() }
+    }
+    @objc private func close() {
+        guard !closing199 else { return }; closing199 = true
+        let photo = image.image
+        let start = mediaFrame199()
+        let target = assets.indices.contains(selected) ? returnFrame199?(assets[selected].localIdentifier, view) : nil
+        generation += 1; stopPlayer(); repository.manager.cancelImageRequest(request)
+        if let photo = photo, let target = target, !start.isEmpty, !storage.state.settings.reducedMotion {
+            let ghost = ghost199(photo, at: start)
+            ghost.layer.cornerRadius = 0; media.alpha = 0
+            UIView.animate(withDuration: 0.31, delay: 0, usingSpringWithDamping: 0.9, initialSpringVelocity: 0, animations: {
+                ghost.frame = target; ghost.layer.cornerRadius = 10
+                self.backdrop.alpha = 0; self.view.backgroundColor = .clear
+                self.chrome.alpha = 0; self.controls.alpha = 0
+            }) { _ in self.dismiss(animated: false) }
+        } else { dismiss(animated: false) }
+        let storage = storage
+        DispatchQueue.global(qos: .utility).async { try? storage.save() }
+    }
+    @objc private func toggleLive199() {
+        liveStop199?.cancel()
+        if liveHolding193 { setLive199(false); return }
+        setLive199(true)
+        let stop = DispatchWorkItem { [weak self] in self?.setLive199(false) }
+        liveStop199 = stop
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: stop)
+    }
     private func previewLive193(_ gesture: UILongPressGestureRecognizer) {
-        if assets[selected].encrypted != nil { previewPrivateLive193(gesture); return }
-        if gesture.state == .began {
+        if gesture.state == .began { setLive199(true) }
+        else if gesture.state == .ended || gesture.state == .cancelled || gesture.state == .failed { setLive199(false) }
+    }
+    private func setLive199(_ playing: Bool) {
+        guard assets.indices.contains(selected) else { return }
+        if assets[selected].encrypted != nil { previewPrivateLive193(playing); return }
+        if playing {
             liveHolding193 = true; let token = generation
             let scale = view.window?.screen.scale ?? UIScreen.main.scale
             liveRequest193 = repository.livePhoto193(assets[selected], size: CGSize(width: max(600, media.bounds.width * scale), height: max(600, media.bounds.height * scale))) { [weak self] live in
@@ -384,15 +505,15 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
                 self.live193.livePhoto = live; self.live193.startPlayback(with: .full)
                 UIView.animate(withDuration: self.storage.state.settings.reducedMotion ? 0 : 0.16, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) { self.live193.alpha = 1 }
             }
-        } else if gesture.state == .ended || gesture.state == .cancelled || gesture.state == .failed {
+        } else {
             liveHolding193 = false; repository.manager.cancelImageRequest(liveRequest193)
             UIView.animate(withDuration: storage.state.settings.reducedMotion ? 0 : 0.18, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction], animations: { self.live193.alpha = 0 }) { _ in
                 if !self.liveHolding193 { self.live193.stopPlayback(); self.live193.livePhoto = nil }
             }
         }
     }
-    private func previewPrivateLive193(_ gesture: UILongPressGestureRecognizer) {
-        if gesture.state == .began {
+    private func previewPrivateLive193(_ playing: Bool) {
+        if playing {
             liveHolding193 = true; let token = generation
             repository.video(assets[selected]) { [weak self] item in
                 guard let self = self, self.generation == token, self.liveHolding193, let item = item else { return }
@@ -405,7 +526,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
                     }
                 }; clip.play()
             }
-        } else if gesture.state == .ended || gesture.state == .cancelled || gesture.state == .failed {
+        } else {
             liveHolding193 = false; privateLiveObservation193?.invalidate(); privateLiveObservation193 = nil
             CATransaction.begin(); CATransaction.setAnimationDuration(storage.state.settings.reducedMotion ? 0 : 0.18)
             CATransaction.setCompletionBlock { [weak self] in
@@ -414,6 +535,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         }
     }
     private func stopPlayer() {
+        liveStop199?.cancel()
         privateLiveObservation193?.invalidate(); privateLiveObservation193 = nil; privateLive193?.pause(); privateLive193 = nil; playerLayer.opacity = 1
         liveHolding193 = false; repository.manager.cancelImageRequest(liveRequest193); live193.layer.removeAllAnimations(); live193.stopPlayback(); live193.livePhoto = nil; live193.alpha = 0
 
@@ -426,14 +548,26 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { assets.count }
     func collectionView(_ collectionView: UICollectionView, cellForItemAt path: IndexPath) -> UICollectionViewCell {
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: MediaCell.reuse, for: path) as! MediaCell, asset = assets[path.item], id = asset.localIdentifier
-        cell.represented = id; cell.showName = false; cell.facts.isHidden = true; cell.videoIcon.isHidden = asset.mediaType != .video; cell.contentView.layer.cornerRadius = 8
+        cell.represented = id; cell.protectedBadge193.isHidden = true; cell.showName = false; cell.facts.isHidden = true; cell.videoIcon.isHidden = asset.mediaType != .video; cell.contentView.layer.cornerRadius = 8
         cell.layer.borderWidth = path.item == selected ? 2 : 0; cell.layer.borderColor = Theme.blue.cgColor
         repository.thumbnail(asset, pixels: 160) { [weak cell] image in if cell?.represented == id { cell?.image.image = image } }; return cell
     }
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt path: IndexPath) { if path.item != selected { show(path.item) } }
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) { if scrollView === strip { stripFeedback199.prepare() } }
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard scrollView === strip, strip.isDragging || strip.isDecelerating else { return }
+        selectCenter(scrollView)
+    }
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { selectCenter(scrollView) }
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) { if !decelerate { selectCenter(scrollView) } }
-    private func selectCenter(_ scroll: UIScrollView) { guard scroll === strip, let path = strip.indexPathForItem(at: CGPoint(x: strip.contentOffset.x + strip.bounds.width / 2, y: strip.bounds.height / 2)), path.item != selected else { return }; show(path.item) }
+    private func selectCenter(_ scroll: UIScrollView) {
+        guard scroll === strip, let path = strip.indexPathsForVisibleItems.min(by: {
+            abs((strip.layoutAttributesForItem(at: $0)?.center.x ?? .greatestFiniteMagnitude) - strip.bounds.midX) <
+            abs((strip.layoutAttributesForItem(at: $1)?.center.x ?? .greatestFiniteMagnitude) - strip.bounds.midX)
+        }), path.item != selected else { return }
+        show(path.item, centerStrip: false)
+        stripFeedback199.selectionChanged(); stripFeedback199.prepare()
+    }
     private func time(_ value: Double) -> String { let seconds = value.isFinite ? max(0, Int(value)) : 0; return String(format: "%02d:%02d", seconds / 60, seconds % 60) }
     @objc private func backgrounded() { privateLiveObservation193?.invalidate(); privateLiveObservation193 = nil; privateLive193?.pause(); privateLive193 = nil; playerLayer.player = player; playerLayer.opacity = 1; liveHolding193 = false; repository.manager.cancelImageRequest(liveRequest193); live193.stopPlayback(); live193.livePhoto = nil; live193.alpha = 0; player?.pause(); holding = false; updatePlayIcon() }
     deinit { stopPlayer(); fade?.cancel(); NotificationCenter.default.removeObserver(self) }

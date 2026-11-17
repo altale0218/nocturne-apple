@@ -282,6 +282,7 @@ final class PhotoAlbumTarget: MobileAlbumTransfer.Target {
     private let library: PhotoSyncLibrary
     private let storage: SecureStorage
     private let albumID: String
+    private var destinationAlbumID: String? { albumID == PhotoSyncLibrary.Album.all.identifier ? nil : albumID }
     private let peer: String
     private let lease: Int
     private let archive: XiaomiOriginalArchive
@@ -373,7 +374,7 @@ final class PhotoAlbumTarget: MobileAlbumTransfer.Target {
                     } else {
                         native = try manifest.nativeItem()
                     }
-                    _ = try await library.receive(native, files: [], protectedDirectory: storage.root, albumID: albumID,
+                    _ = try await library.receive(native, files: [], protectedDirectory: storage.root, albumID: destinationAlbumID,
                                                   peer: peer, remoteID: manifest.id, lease: lease,
                                                   proof: verifiedOriginals[receipt.identifier])
                     let assets = try library.select([receipt.identifier], lease: lease).visible
@@ -545,7 +546,7 @@ final class PhotoAlbumTarget: MobileAlbumTransfer.Target {
         let identifier: String
         do {
             identifier = try await library.receive(native, files: files, protectedDirectory: zone.directory,
-                                                   albumID: albumID, peer: peer, remoteID: asset.id, lease: lease)
+                                                   albumID: destinationAlbumID, peer: peer, remoteID: asset.id, lease: lease)
         } catch is PhotoSyncLibrary.CreatedButUnverified {
             try Task.checkCancellation()
             try storage.validateResourceLease193(lease)
@@ -579,7 +580,7 @@ final class PhotoAlbumTarget: MobileAlbumTransfer.Target {
         } else {
             native = try manifest.nativeItem()
         }
-        try await library.useExisting(asset, item: native, peer: peer, remoteID: manifest.id, albumID: albumID, lease: lease,
+        try await library.useExisting(asset, item: native, peer: peer, remoteID: manifest.id, albumID: destinationAlbumID, lease: lease,
                                       proof: verifiedOriginals[asset.localIdentifier])
         knownOriginals.remember(manifest, identifier: asset.localIdentifier)
         confirmed.insert(manifest.id)

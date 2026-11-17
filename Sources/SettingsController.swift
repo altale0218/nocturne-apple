@@ -60,7 +60,7 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         case "back": return Strings.text("双击左侧回退", "Double-tap left rewind", "左をダブルタップで戻る", "雙擊左側後退")
         case "forward": return Strings.text("双击右侧前进", "Double-tap right forward", "右をダブルタップで進む", "雙擊右側前進")
         case "blur": return Strings.text("静态模糊强度", "Static blur strength", "静的ぼかしの強さ", "靜態模糊強度")
-        case "mode": return storage.envelope.privateMode ? Strings.text("切换普通模式", "Switch to ordinary", "通常モードに変更", "切換普通模式") : Strings.text("启用 Private", "Enable Private", "Private を有効化", "啟用 Private")
+        case "mode": return storage.envelope.privateMode ? Strings.text("返回普通图库", "Switch to ordinary", "通常モードに変更", "切換普通模式") : Strings.text("打开 Private", "Enable Private", "Private を有効化", "啟用 Private")
         case "boundary": return Strings.text("保护范围与性能影响", "Protection and performance", "保護範囲と性能への影響", "保護範圍與效能影響")
         default: return "Nocturne · " + Release.version
         }
@@ -182,19 +182,8 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         }); present(alert, animated: true)
     }
     private func changeMode() {
-        let privateNow = storage.envelope.privateMode
-        let alert = UIAlertController(title: label("mode"), message: privateNow ? Strings.text("输入当前密码", "Enter current password", "現在のパスワード", "輸入目前密碼") : Strings.text("新密码至少 10 位", "New password, at least 10 characters", "新しいパスワードは10文字以上", "新密碼至少10位"), preferredStyle: .alert)
-        alert.addTextField { $0.isSecureTextEntry = true; $0.textContentType = privateNow ? .password : .newPassword }
-        alert.addAction(UIAlertAction(title: Strings.cancel, style: .cancel))
-        alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak self] _ in
-            guard let self = self, let pass = alert.textFields?.first?.text else { return }
-            self.view.isUserInteractionEnabled = false
-            DispatchQueue.global(qos: .userInitiated).async {
-                do { if privateNow { try self.storage.enableOrdinary(password: pass) } else { try self.storage.enablePrivate(password: pass) }; try self.storage.save()
-                    DispatchQueue.main.async { self.view.isUserInteractionEnabled = true; self.dismiss(animated: false) { self.modeChanged?() } }
-                } catch { DispatchQueue.main.async { self.view.isUserInteractionEnabled = true; self.message("Private", Strings.text("密码不正确或操作未完成。", "Password incorrect or operation incomplete.", "パスワードが違うか、処理が完了していません。", "密碼不正確或操作未完成。")) } }
-            }
-        }); present(alert, animated: true)
+        let change = modeChanged
+        dismiss(animated: true) { change?() }
     }
     private func message(_ label: String, _ body: String) { let alert = UIAlertController(title: label, message: body, preferredStyle: .alert); alert.addAction(UIAlertAction(title: "OK", style: .default)); present(alert, animated: true) }
     private func message(label: String, body: String) { message(label, body) }

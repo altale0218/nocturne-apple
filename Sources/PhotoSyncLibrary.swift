@@ -137,7 +137,7 @@ final class PhotoSyncLibrary {
         let identifier: String
         let title: String
         var isLibraryScope: Bool { identifier == Self.all.identifier || identifier == Self.recent.identifier }
-        static let all = Album(identifier: "nocturne:photos:all", title: "全部照片与视频（仅发送）")
+        static let all = Album(identifier: "nocturne:photos:all", title: "全部照片与视频")
         static let recent = Album(identifier: "nocturne:photos:recent", title: "最近拍摄 · 30 天（仅发送）")
     }
 

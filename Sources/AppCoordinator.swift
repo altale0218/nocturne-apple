@@ -4,22 +4,46 @@ final class AppCoordinator {
     let window: UIWindow
     private let rootSink193: ((UIViewController) -> Void)?
     private var storage: SecureStorage?
+    private var ordinary193: SecureStorage?
+    private var private193: SecureStorage?
     private var repository: PhotoRepository?
     private let clock = SessionClock()
     private let work = DispatchQueue(label: "com.nocturne.unlock", qos: .userInitiated)
     private var privacyCover: UIView?
     private var authEpoch193 = 0
+    private var transientRepository199: PhotoRepository?
     private var active193 = true
     init(window: UIWindow, rootSink193: ((UIViewController) -> Void)? = nil) { self.window = window; self.rootSink193 = rootSink193 }
     private func showRoot193(_ controller: UIViewController) { if let sink = rootSink193 { sink(controller) } else { window.rootViewController = controller } }
     func start() {
-        do { storage = try SecureStorage(); landing() }
+        do {
+            let original = try SecureStorage()
+            let parent = original.root.deletingLastPathComponent()
+            if original.envelope.privateMode {
+                private193 = original
+                ordinary193 = try SecureStorage(root: parent.appendingPathComponent("NocturneOrdinary193", isDirectory: true))
+            } else {
+                ordinary193 = original
+                private193 = try SecureStorage(root: parent.appendingPathComponent("NocturnePrivate193", isDirectory: true))
+            }
+            if let ordinary = ordinary193 {
+                try ordinary.unlock()
+                enter(ordinary)
+            }
+        }
         catch { let controller = UIViewController(); controller.view.backgroundColor = .white; let label = UILabel(); label.text = "Nocturne: storage unavailable"; label.textAlignment = .center; label.frame = CGRect(x: 20, y: 100, width: 300, height: 80); controller.view.addSubview(label); showRoot193(controller) }
         if rootSink193 == nil { window.makeKeyAndVisible() }
     }
-    private func landing() {
-        guard let storage = storage else { return }
-        repository?.lock(); repository = nil
+    private func landing(from source: UIViewController? = nil, importing asset: MediaAsset193? = nil) {
+        guard let storage = private193, let presenter = source ?? window.rootViewController,
+              presenter.presentedViewController == nil, transientRepository199 == nil else { return }
+        let didUnlock: () -> Void = { [weak self, weak presenter] in
+            guard let self = self, self.active193 else { storage.lock(); return }
+            if let asset = asset, let presenter = presenter {
+                self.importIntoPrivate199(asset, storage: storage, presenter: presenter)
+            } else if asset == nil { self.switchLibrary193(storage) }
+            else { storage.lock() }
+        }
         let controller = LandingController(privateMode: storage.envelope.privateMode, biometricEnabled: storage.envelope.biometric193 == true)
         controller.open = { [weak self, weak controller] password, privateCreate in
             guard let self = self else { return }
@@ -29,7 +53,10 @@ final class AppCoordinator {
                 do {
                     try storage.unlock(password: password)
                     if privateCreate { guard let password = password else { throw StorageError.locked }; try storage.enablePrivate(password: password); try storage.save() }
-                    DispatchQueue.main.async { guard token == self.authEpoch193, self.active193 else { storage.lock(); return }; if privateCreate { self.offerBiometric193(storage) { if token == self.authEpoch193 { self.enter(storage) } } } else { self.enter(storage) } }
+                    DispatchQueue.main.async {
+                        guard token == self.authEpoch193, self.active193, let controller = controller else { storage.lock(); return }
+                        controller.dismiss(animated: true, completion: didUnlock)
+                    }
                 } catch { storage.lock(); DispatchQueue.main.async { controller?.busy(false); controller?.error193(error) } }
             }
         }
@@ -37,40 +64,31 @@ final class AppCoordinator {
             guard let self = self else { return }; controller?.busy(true)
             let token = self.authEpoch193
             self.work.async {
-                do { try storage.unlockBiometric193(); DispatchQueue.main.async { guard token == self.authEpoch193, self.active193 else { storage.lock(); return }; self.enter(storage) } }
+                do { try storage.unlockBiometric193(); DispatchQueue.main.async { guard token == self.authEpoch193, self.active193 else { storage.lock(); return }; guard let controller = controller else { storage.lock(); return }; controller.dismiss(animated: true, completion: didUnlock) } }
                 catch { storage.lock(); DispatchQueue.main.async { controller?.busy(false); controller?.status193("生物识别未完成或授权已失效，请使用密码。") } }
             }
         }
-        showRoot193(controller)
+        if #available(iOS 13, *) { controller.isModalInPresentation = true }
+        presenter.present(controller, animated: true)
         if storage.exportCleanupPending193 > 0 { controller.loadViewIfNeeded(); controller.status193("上次移出的受保护临时原件尚待清理，新的移出操作已暂停。") }
     }
-    private func offerBiometric193(_ storage: SecureStorage, completion: @escaping () -> Void) {
-        let alert = UIAlertController(title: "启用Face ID或Touch ID？", message: "使用系统生物识别保护解锁密钥，密码入口始终保留。", preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "暂不启用", style: .cancel) { _ in completion() })
-        alert.addAction(UIAlertAction(title: "启用", style: .default) { [weak self] _ in
-            guard let self = self else { return }
-            self.work.async {
-                var enrolled = false; do { try storage.enableBiometric193(); enrolled = true } catch {}
-                let enabled = enrolled
-                DispatchQueue.main.async {
-                    if enabled { completion() }
-                    else { let warning = UIAlertController(title: "未启用生物识别", message: "密码解锁继续可用，可稍后在设置中重试。", preferredStyle: .alert)
-                        warning.addAction(UIAlertAction(title: "继续", style: .default) { _ in completion() })
-                        let presenter = self.window.rootViewController?.presentedViewController ?? self.window.rootViewController
-                        presenter?.present(warning, animated: true)
-                    }
-                }
-            }
-        })
-        let presenter = window.rootViewController?.presentedViewController ?? window.rootViewController
-        presenter?.present(alert, animated: true)
+    private func switchLibrary193(_ target: SecureStorage) {
+        guard active193, target.isUnlocked193 else { target.lock(); return }
+        if let session = clock.finish() { storage?.update { $0.sessions.append(session) } }
+        try? storage?.save()
+        repository?.lock()
+        storage?.lock()
+        enter(target)
     }
     private func enter(_ storage: SecureStorage) {
-        guard active193, storage.isUnlocked193 else { storage.lock(); landing(); return }
+        guard storage.isUnlocked193 else { return }
+        self.storage = storage
         Strings.language = "zh-Hans"
         let repo = PhotoRepository(storage: storage); repository = repo
         let gallery = GalleryController(repository: repo, storage: storage, clock: clock)
         gallery.locked = { [weak self] in self?.lock() }
+        gallery.openPrivate193 = { [weak self] in self?.landing() }
+        gallery.importPrivate199 = { [weak self] controller, asset in self?.landing(from: controller, importing: asset) }
         showRoot193(gallery)
         if storage.envelope.privateMode {
             repo.synchronize()
@@ -86,6 +104,25 @@ final class AppCoordinator {
             gallery.showRelease()
         }
     }
+    private func importIntoPrivate199(_ asset: MediaAsset193, storage: SecureStorage, presenter: UIViewController) {
+        let repo = PhotoRepository(storage: storage)
+        transientRepository199 = repo
+        repo.moveToPrivate193(asset, removeOriginal: false) { [weak self, weak presenter, weak repo] result in
+            guard let self = self, let repo = repo, self.transientRepository199 === repo else { return }
+            self.transientRepository199 = nil
+            repo.lock(); storage.lock()
+            guard self.active193, let presenter = presenter, presenter.viewIfLoaded?.window != nil,
+                  presenter.presentedViewController == nil else { return }
+            let message: String
+            switch result {
+            case .success: message = "已加密保存到 Private，系统相册原片仍保留。"
+            case .failure: message = "转入未完成，系统相册原片仍保留。"
+            }
+            let alert = UIAlertController(title: "Private", message: message, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "好", style: .default))
+            presenter.present(alert, animated: true)
+        }
+    }
     func willResignActive() {
         guard storage?.envelope.privateMode == true, privacyCover == nil else { return }
         let cover = UIView(frame: window.bounds); cover.autoresizingMask = [.flexibleWidth, .flexibleHeight]; cover.backgroundColor = Theme.background(false)
@@ -94,6 +131,10 @@ final class AppCoordinator {
     }
     func becameActive() {
         active193 = true
+        if storage?.isUnlocked193 != true, let ordinary = ordinary193 {
+            do { try ordinary.unlock(); enter(ordinary) }
+            catch { showStorageFailure193() }
+        }
         storage?.cleanupAbandonedExports193()
         privacyCover?.removeFromSuperview(); privacyCover = nil
     }
@@ -101,6 +142,7 @@ final class AppCoordinator {
         guard active193 else { return }
         active193 = false
         authEpoch193 += 1
+        if let transient = transientRepository199 { transientRepository199 = nil; transient.lock(); private193?.lock() }
         if storage?.envelope.privateMode == true {
             willResignActive()
             lock()
@@ -109,6 +151,18 @@ final class AppCoordinator {
         if let session = clock.finish() { storage?.update { $0.sessions.append(session) } }
         try? storage?.save()
     }
+    private func showStorageFailure193() {
+        let screen = UIViewController()
+        screen.view.backgroundColor = .white
+        let notice = UILabel(frame: screen.view.bounds.insetBy(dx: 24, dy: 0))
+        notice.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        notice.textAlignment = .center
+        notice.numberOfLines = 0
+        notice.text = "普通图库暂不可用，请解锁设备后重试。"
+        screen.view.addSubview(notice)
+        showRoot193(screen)
+    }
+
     private func lock() {
         authEpoch193 += 1
         repository?.lock()
@@ -116,7 +170,10 @@ final class AppCoordinator {
         try? storage?.save()
         storage?.lock()
         window.rootViewController?.dismiss(animated: false)
-        landing()
+        if let ordinary = ordinary193 {
+            do { try ordinary.unlock(); enter(ordinary) }
+            catch { showStorageFailure193() }
+        }
         if let cover = privacyCover { window.bringSubviewToFront(cover) }
     }
 }
@@ -142,7 +199,7 @@ final class LandingController: UIViewController {
         confirm.isSecureTextEntry = true; confirm.placeholder = Strings.text("再次输入密码", "Confirm password", "パスワードの確認", "再次輸入密碼")
         for input in [password, confirm] { input.borderStyle = .roundedRect; input.backgroundColor = dark193 ? UIColor(white: 0.15, alpha: 1) : .white; input.heightAnchor.constraint(equalToConstant: 48).isActive = true; stack.addArrangedSubview(input) }
         confirm.isHidden = privateMode
-        if !privateMode { add(Strings.text("普通 · 开始浏览", "Ordinary · Start browsing", "通常・閲覧を開始", "普通・開始瀏覽"), #selector(ordinary)) }
+        add(Strings.cancel, #selector(cancel193))
         add(privateMode ? Strings.text("解锁", "Unlock", "ロック解除", "解鎖") : Strings.text("启用 Private", "Enable Private", "Private を有効化", "啟用 Private"), #selector(privateOpen))
         if privateMode && biometricEnabled193 { add("Face ID / Touch ID 解锁", #selector(biometric193)) }
         status.font = .systemFont(ofSize: 12); status.numberOfLines = 0; status.textColor = .red; stack.addArrangedSubview(status)
@@ -169,7 +226,7 @@ final class LandingController: UIViewController {
         for item in stack.arrangedSubviews { if let label = item as? UILabel, label !== status { label.textColor = Theme.text(dark193) } }
         for input in [password, confirm] { input.backgroundColor = dark193 ? UIColor(white: 0.15, alpha: 1) : .white; input.textColor = Theme.text(dark193) }
     }
-    @objc private func ordinary() { view.endEditing(true); open?(nil, false) }
+    @objc private func cancel193() { dismiss(animated: true) }
     @objc private func privateOpen() {
         let secret = password.text ?? ""
         guard privateMode || (secret.count >= 10 && secret == confirm.text) else { error(); return }

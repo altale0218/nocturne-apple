@@ -406,7 +406,7 @@ enum AppleSyncTransport {
             let tcp = NWProtocolTCP.Options()
             tcp.noDelay = true
             let parameters = NWParameters(tls: tls, tcp: tcp)
-            parameters.prohibitedInterfaceTypes = [.cellular, .other, .loopback]
+            parameters.prohibitedInterfaceTypes = [.cellular, .loopback]
             connection = NWConnection(host: .ipv4(ip), port: AppleSyncTransport.port, using: parameters)
         }
 
