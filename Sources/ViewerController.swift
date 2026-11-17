@@ -36,6 +36,11 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
     private let stripFeedback199 = UISelectionFeedbackGenerator()
     private var swipeDown199 = false
     private var closing199 = false
+    private var immersive = false
+    private var stripCommit: DispatchWorkItem?
+    private var stripPreview = false
+    private let stripItemWidth: CGFloat = 48
+    private let stripSpacing: CGFloat = 5
     var addPrivate199: ((UIViewController, MediaAsset193) -> Void)?
     var openingFrame199: CGRect?
     var openingImage199: UIImage?
@@ -45,7 +50,8 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override var prefersStatusBarHidden: Bool { false }
+    override var prefersStatusBarHidden: Bool { immersive }
+    override var prefersHomeIndicatorAutoHidden: Bool { immersive }
     override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -61,6 +67,14 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         moreButton193 = more
         back.frame = CGRect(x: 12, y: 8, width: 48, height: 48); more.autoresizingMask = [.flexibleLeftMargin]; more.frame = CGRect(x: 260, y: 8, width: 48, height: 48)
         for button in [back, more] { button.tintColor = .white; button.backgroundColor = UIColor(white: 0, alpha: 0.25); button.layer.cornerRadius = 16; chrome.addSubview(button) }
+        more.backgroundColor = .clear
+        more.layer.shadowOpacity = 0
+        if #available(iOS 15, *) {
+            var plain = UIButton.Configuration.plain()
+            plain.image = more.image(for: .normal)
+            plain.baseForegroundColor = .white
+            more.configuration = plain
+        }
         stage.addSubview(chrome)
         facts.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium); facts.textColor = UIColor(white: 1, alpha: 0.75); facts.textAlignment = .right
         controls.addSubview(facts)
@@ -73,10 +87,21 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         timeline.addTarget(self, action: #selector(endSeek), for: [.touchUpInside, .touchUpOutside, .touchCancel]); controls.addSubview(timeline)
         markView.backgroundColor = .white; markView.layer.cornerRadius = 3; markView.addTarget(self, action: #selector(jumpToMark), for: .touchUpInside); timeline.addSubview(markView)
         actions.axis = .horizontal; actions.spacing = 14; actions.distribution = .fillEqually
-        let speed = Theme.button("speedometer", target: self, action: #selector(speedMenu)), mark = Theme.button("scope", target: self, action: #selector(toggleMark))
+        let speed = Theme.button("speedometer", target: self, action: #selector(speedMenu(_:))), mark = Theme.button("scope", target: self, action: #selector(toggleMark))
         play = Theme.button("pause.fill", target: self, action: #selector(togglePlayback)); favorite = Theme.button("heart", target: self, action: #selector(toggleFavorite))
         jump = Theme.button("bookmark.fill", target: self, action: #selector(jumpToMark))
         for button in [speed, mark, play!, jump!] { button.backgroundColor = UIColor(white: 1, alpha: 0.10); button.layer.cornerRadius = 14; button.tintColor = .white; actions.addArrangedSubview(button) }
+        if #available(iOS 15, *) {
+            speed.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] completion in
+                guard let self = self else { completion([]); return }
+                completion(self.playbackSpeeds.map { value in
+                    UIAction(title: self.speedTitle(value), state: value == self.baseRate ? .on : .off) { [weak self] _ in
+                        self?.applyPlaybackSpeed(value)
+                    }
+                })
+            }])
+            speed.showsMenuAsPrimaryAction = true
+        }
         let live = Theme.button("livephoto", target: self, action: #selector(toggleLive199))
         live.accessibilityLabel = "播放实况照片"
         liveButton199 = live
@@ -87,11 +112,11 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
             chrome.addSubview(button)
         }
         controls.addSubview(actions); view.addSubview(controls)
-        let stripLayout = UICollectionViewFlowLayout(); stripLayout.scrollDirection = .horizontal; stripLayout.minimumLineSpacing = 5; stripLayout.itemSize = CGSize(width: 48, height: 60)
+        let stripLayout = UICollectionViewFlowLayout(); stripLayout.scrollDirection = .horizontal; stripLayout.minimumLineSpacing = stripSpacing; stripLayout.itemSize = CGSize(width: stripItemWidth, height: 52)
         strip = UICollectionView(frame: .zero, collectionViewLayout: stripLayout); strip.backgroundColor = .clear; strip.dataSource = self; strip.delegate = self; strip.showsHorizontalScrollIndicator = false; strip.decelerationRate = .fast
         strip.register(MediaCell.self, forCellWithReuseIdentifier: MediaCell.reuse); controls.addSubview(strip)
         let doubleTap = UITapGestureRecognizer(target: self, action: #selector(doubleTapped(_:))); doubleTap.numberOfTapsRequired = 2; zoom.addGestureRecognizer(doubleTap)
-        let tap = UITapGestureRecognizer(target: self, action: #selector(activate)); tap.require(toFail: doubleTap); zoom.addGestureRecognizer(tap)
+        let tap = UITapGestureRecognizer(target: self, action: #selector(toggleControls)); tap.require(toFail: doubleTap); zoom.addGestureRecognizer(tap)
         let swipe = UIPanGestureRecognizer(target: self, action: #selector(pageSwipe(_:))); swipe.delegate = self; zoom.addGestureRecognizer(swipe)
         zoom.panGestureRecognizer.require(toFail: swipe)
         let hold = UILongPressGestureRecognizer(target: self, action: #selector(holdSpeed(_:))); hold.minimumPressDuration = 0.24; hold.allowableMovement = 18; hold.delegate = self; zoom.addGestureRecognizer(hold)
@@ -109,12 +134,13 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         strip.frame = CGRect(x: 0, y: 102, width: width, height: 56)
         strip.contentInsetAdjustmentBehavior = .never
         if let flow = strip.collectionViewLayout as? UICollectionViewFlowLayout {
-            let inset = UIEdgeInsets(top: 0, left: max(0, width / 2 - 24), bottom: 0, right: max(0, width / 2 - 24))
+            let inset = UIEdgeInsets(top: 0, left: max(0, (width - stripItemWidth) / 2), bottom: 0, right: max(0, (width - stripItemWidth) / 2))
             if flow.sectionInset != inset { flow.sectionInset = inset }
         }
         stage.frame = CGRect(x: safe.left, y: safe.top, width: width, height: max(1, (controls.isHidden ? view.bounds.height - safe.bottom : controls.frame.minY + 20) - safe.top))
+        if immersive { stage.frame = view.bounds }
         backdrop.frame = view.bounds; blur.frame = stage.bounds; blur.alpha = CGFloat(max(0, min(1, storage.state.settings.blurRadius / 48))); zoom.frame = stage.bounds
-        if zoom.zoomScale == 1 { media.frame = zoom.bounds; zoom.contentSize = media.bounds.size }
+        if zoom.zoomScale == 1 { media.frame = CGRect(origin: .zero, size: zoom.bounds.size); zoom.contentSize = media.bounds.size }
         image.frame = media.bounds; precision.frame = media.bounds; live193.frame = media.bounds; playerLayer.frame = media.bounds
         chrome.frame = CGRect(x: 0, y: 0, width: width, height: 64)
         moreButton193?.frame = CGRect(x: width - 60, y: 8, width: 48, height: 48)
@@ -125,16 +151,21 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         speedHint.frame = CGRect(x: max(safe.left + 12, view.bounds.midX - 130), y: max(safe.top + 70, controls.frame.minY - 42), width: min(260, width - 24), height: 32)
         updateMark()
     }
-    private func show(_ index: Int, count: Bool = true, centerStrip: Bool = true) {
-        guard assets.indices.contains(index) else { return }
+    private func show(_ index: Int, count: Bool = true, centerStrip: Bool = true, posterOnly: Bool = false, keepingPoster: Bool = false) {
+        guard !closing199, assets.indices.contains(index) else { return }
+        if !posterOnly { stripCommit?.cancel(); stripPreview = false }
         generation += 1; let token = generation; selected = index; fullReady193 = false
         holding = false; holdLocked = false; speedHint.isHidden = true; rate = baseRate; media.transform = .identity
         stopPlayer(); repository.manager.cancelImageRequest(request)
-        zoom.setZoomScale(1, animated: false); image.image = count ? nil : openingImage199; precision.image = nil; precision.isHidden = true
+        zoom.setZoomScale(1, animated: false)
+        if !keepingPoster {
+            let cell = strip.cellForItem(at: IndexPath(item: index, section: 0)) as? MediaCell
+            image.image = cell?.image.image ?? (count || posterOnly ? nil : openingImage199)
+        } precision.image = nil; precision.isHidden = true
         let asset = assets[index], id = asset.localIdentifier
         if count { storage.update { state in var record = state.records[id] ?? MediaRecord(); record.viewed(); state.records[id] = record } }
-        repository.thumbnail(asset) { [weak self] thumb in guard let self = self, self.generation == token else { return }; if !self.fullReady193 { self.image.image = thumb }
-            if let thumb = thumb {
+        repository.thumbnail(asset, pixels: posterOnly ? 160 : 480) { [weak self] thumb in guard let self = self, self.generation == token else { return }; if !self.fullReady193, let thumb = thumb { self.image.image = thumb }
+            if !posterOnly, let thumb = thumb {
                 let radius = self.storage.state.settings.blurRadius
                 DispatchQueue.global(qos: .utility).async { [weak self] in
                     let softened = PhotoBlur120.render(thumb, radius: radius)
@@ -144,6 +175,10 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         let video = asset.mediaType == .video
         liveButton199?.isHidden = !asset.mediaSubtypes.contains(.photoLive)
         timeline.isHidden = !video; play.isHidden = !video; actions.arrangedSubviews[0].isHidden = !video; actions.arrangedSubviews[1].isHidden = !video; jump.isHidden = !video
+        for case let cell as MediaCell in strip.visibleCells {
+            cell.contentView.layer.borderWidth = strip.indexPath(for: cell)?.item == index ? 2 : 0
+        }
+        if posterOnly { return }
         if video {
             request = repository.video(asset) { [weak self] item in
                 guard let self = self, self.generation == token, let item = item else { return }
@@ -171,10 +206,6 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         if centerStrip {
             strip.reloadData(); strip.layoutIfNeeded()
             if strip.bounds.width > 0 { strip.scrollToItem(at: IndexPath(item: index, section: 0), at: .centeredHorizontally, animated: false) }
-        } else {
-            for case let cell as MediaCell in strip.visibleCells {
-                cell.layer.borderWidth = strip.indexPath(for: cell)?.item == index ? 2 : 0
-            }
         }
         updateFacts(); updatePlayIcon(); updateMark(); updateNativeMenu193(); activate()
     }
@@ -238,7 +269,19 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
             let back = gesture.location(in: zoom).x < zoom.bounds.width / 2
             let p = storage.state.settings, delta = back ? -p.skipBackward : p.skipForward
             timeline.value = Float(max(0, min(assets[selected].duration, (player?.currentTime().seconds ?? 0) + delta))); beginSeek(); changeSeek(); endSeek()
-        } else { let next: CGFloat = zoom.zoomScale > 1.1 ? 1 : 2.5; zoom.setZoomScale(next, animated: !storage.state.settings.reducedMotion) }
+        } else {
+            let animated = !storage.state.settings.reducedMotion && !UIAccessibility.isReduceMotionEnabled
+            if zoom.zoomScale > zoom.minimumZoomScale + 0.01 {
+                zoom.setZoomScale(zoom.minimumZoomScale, animated: animated)
+                return
+            }
+            let scale = min(zoom.maximumZoomScale, 2.5)
+            let size = CGSize(width: zoom.bounds.width / scale, height: zoom.bounds.height / scale)
+            let location = gesture.location(in: media)
+            let origin = CGPoint(x: min(max(0, location.x - size.width / 2), max(0, media.bounds.width - size.width)),
+                                 y: min(max(0, location.y - size.height / 2), max(0, media.bounds.height - size.height)))
+            zoom.zoom(to: CGRect(origin: origin, size: size), animated: animated)
+        }
     }
     @objc private func toggleMark() {
         let id = assets[selected].localIdentifier
@@ -265,10 +308,22 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
             }
         }
     }
-    @objc private func speedMenu() {
-        let alert = UIAlertController(title: Strings.text("播放速度", "Playback speed", "再生速度", "播放速度"), message: nil, preferredStyle: .actionSheet)
-        for speed in [0.5, 0.75, 1, 1.25, 1.5, 2, 3] as [Float] { alert.addAction(UIAlertAction(title: "\(speed)×", style: .default) { [weak self] _ in guard let self = self else { return }; self.rate = speed; self.baseRate = speed; self.holdLocked = false; self.speedHint.isHidden = true; if (self.player?.rate ?? 0) > 0 { self.player?.rate = speed } }) }
-        alert.addAction(UIAlertAction(title: Strings.cancel, style: .cancel)); anchor(alert); present(alert, animated: true)
+    private let playbackSpeeds: [Float] = [0.5, 0.75, 1, 1.25, 1.5, 2, 3]
+    private func speedTitle(_ value: Float) -> String { String(format: "%g×", Double(value)) }
+    private func applyPlaybackSpeed(_ value: Float) {
+        rate = value; baseRate = value; holdLocked = false; speedHint.isHidden = true
+        if (player?.rate ?? 0) > 0 { player?.rate = value }
+    }
+    @objc private func speedMenu(_ sender: UIButton) {
+        if #available(iOS 15, *) { return }
+        let alert = UIAlertController(title: "播放速度", message: nil, preferredStyle: .actionSheet)
+        for value in playbackSpeeds {
+            alert.addAction(UIAlertAction(title: speedTitle(value), style: .default) { [weak self] _ in self?.applyPlaybackSpeed(value) })
+        }
+        alert.addAction(UIAlertAction(title: Strings.cancel, style: .cancel))
+        alert.popoverPresentationController?.sourceView = sender
+        alert.popoverPresentationController?.sourceRect = sender.bounds
+        present(alert, animated: true)
     }
     private func restorePrivate193() {
         guard !moving193, let encrypted = assets[selected].encrypted else { return }
@@ -368,7 +423,15 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
                 } else { self.show(self.selected, count: false) } } }); present(alert, animated: true)
     }
     private func anchor(_ alert: UIAlertController) { alert.popoverPresentationController?.sourceView = actions; alert.popoverPresentationController?.sourceRect = actions.bounds }
-    @objc private func toggleControls() { controls.isHidden.toggle(); view.setNeedsLayout(); activate() }
+    @objc private func toggleControls() {
+        immersive.toggle()
+        controls.isHidden = immersive
+        chrome.isHidden = immersive
+        setNeedsStatusBarAppearanceUpdate()
+        setNeedsUpdateOfHomeIndicatorAutoHidden()
+        view.setNeedsLayout()
+        activate()
+    }
     @objc private func activate() {
         fade?.cancel(); chrome.alpha = 1; facts.alpha = 1; dateLabel.alpha = 1
         let work = DispatchWorkItem { [weak self] in UIView.animate(withDuration: 0.32) { self?.facts.alpha = 0.65; self?.dateLabel.alpha = 0.45 } }
@@ -467,6 +530,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
     }
     @objc private func close() {
         guard !closing199 else { return }; closing199 = true
+        stripCommit?.cancel()
         let photo = image.image ?? openingImage199
         let start = mediaFrame199()
         let target = assets.indices.contains(selected) ? returnFrame199?(assets[selected].localIdentifier, view) : nil
@@ -550,28 +614,46 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
     func collectionView(_ collectionView: UICollectionView, cellForItemAt path: IndexPath) -> UICollectionViewCell {
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: MediaCell.reuse, for: path) as! MediaCell, asset = assets[path.item], id = asset.localIdentifier
         cell.represented = id; cell.protectedBadge193.isHidden = true; cell.showName = false; cell.facts.isHidden = true; cell.videoIcon.isHidden = asset.mediaType != .video; cell.contentView.layer.cornerRadius = 8
-        cell.layer.borderWidth = path.item == selected ? 2 : 0; cell.layer.borderColor = Theme.blue.cgColor
+        cell.contentView.layer.borderWidth = path.item == selected ? 2 : 0; cell.contentView.layer.borderColor = Theme.blue.cgColor
         repository.thumbnail(asset, pixels: 160) { [weak cell] image in if cell?.represented == id { cell?.image.image = image } }; return cell
     }
-    func collectionView(_ collectionView: UICollectionView, didSelectItemAt path: IndexPath) { if path.item != selected { show(path.item) } }
-    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) { if scrollView === strip { stripFeedback199.prepare() } }
-    func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        guard scrollView === strip, strip.isDragging || strip.isDecelerating else { return }
-        selectCenter(scrollView)
+    func collectionView(_ collectionView: UICollectionView, didSelectItemAt path: IndexPath) {
+        if path.item != selected { stripFeedback199.selectionChanged(); show(path.item) }
+        else if stripPreview { finishStripSelection() }
     }
-    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { selectCenter(scrollView) }
-    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) { if !decelerate { selectCenter(scrollView) } }
-    private func selectCenter(_ scroll: UIScrollView) {
-        guard scroll === strip, let path = strip.indexPathsForVisibleItems.min(by: {
-            abs((strip.layoutAttributesForItem(at: $0)?.center.x ?? .greatestFiniteMagnitude) - strip.bounds.midX) <
-            abs((strip.layoutAttributesForItem(at: $1)?.center.x ?? .greatestFiniteMagnitude) - strip.bounds.midX)
-        }), path.item != selected else { return }
-        show(path.item, centerStrip: false)
-        stripFeedback199.selectionChanged(); stripFeedback199.prepare()
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        if scrollView === strip { stripFeedback199.prepare() }
+    }
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard scrollView === strip, strip.isTracking || strip.isDragging || strip.isDecelerating else { return }
+        selectStripPreview()
+    }
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        if scrollView === strip { selectStripPreview(); finishStripSelection() }
+    }
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if scrollView === strip && !decelerate { selectStripPreview(); finishStripSelection() }
+    }
+    private func selectStripPreview() {
+        guard !assets.isEmpty, !closing199 else { return }
+        let index = min(assets.count - 1, max(0, Int((strip.contentOffset.x / (stripItemWidth + stripSpacing)).rounded())))
+        guard index != selected else { return }
+        stripFeedback199.selectionChanged()
+        stripFeedback199.prepare()
+        stripCommit?.cancel()
+        stripPreview = true
+        show(index, count: false, centerStrip: false, posterOnly: true)
+        let commit = DispatchWorkItem { [weak self] in self?.finishStripSelection() }
+        stripCommit = commit
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.10, execute: commit)
+    }
+    private func finishStripSelection() {
+        guard stripPreview, !closing199 else { return }
+        show(selected, centerStrip: false, keepingPoster: true)
     }
     private func time(_ value: Double) -> String { let seconds = value.isFinite ? max(0, Int(value)) : 0; return String(format: "%02d:%02d", seconds / 60, seconds % 60) }
-    @objc private func backgrounded() { privateLiveObservation193?.invalidate(); privateLiveObservation193 = nil; privateLive193?.pause(); privateLive193 = nil; playerLayer.player = player; playerLayer.opacity = 1; liveHolding193 = false; repository.manager.cancelImageRequest(liveRequest193); live193.stopPlayback(); live193.livePhoto = nil; live193.alpha = 0; player?.pause(); holding = false; updatePlayIcon() }
-    deinit { stopPlayer(); fade?.cancel(); NotificationCenter.default.removeObserver(self) }
+    @objc private func backgrounded() { stripCommit?.cancel(); privateLiveObservation193?.invalidate(); privateLiveObservation193 = nil; privateLive193?.pause(); privateLive193 = nil; playerLayer.player = player; playerLayer.opacity = 1; liveHolding193 = false; repository.manager.cancelImageRequest(liveRequest193); live193.stopPlayback(); live193.livePhoto = nil; live193.alpha = 0; player?.pause(); holding = false; updatePlayIcon() }
+    deinit { stripCommit?.cancel(); stopPlayer(); fade?.cancel(); NotificationCenter.default.removeObserver(self) }
 }
 
 // Accumulate every touch delta before quantization, including sub-frame movements.
