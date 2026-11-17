@@ -161,7 +161,9 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         if !keepingPoster {
             let cell = strip.cellForItem(at: IndexPath(item: index, section: 0)) as? MediaCell
             image.image = cell?.image.image ?? (count || posterOnly ? nil : openingImage199)
-        } precision.image = nil; precision.isHidden = true
+        }
+        precision.image = nil
+        precision.isHidden = true
         let asset = assets[index], id = asset.localIdentifier
         if count { storage.update { state in var record = state.records[id] ?? MediaRecord(); record.viewed(); state.records[id] = record } }
         repository.thumbnail(asset, pixels: posterOnly ? 160 : 480) { [weak self] thumb in guard let self = self, self.generation == token else { return }; if !self.fullReady193, let thumb = thumb { self.image.image = thumb }
