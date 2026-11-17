@@ -1,0 +1,16 @@
+.build/
+output/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+__pycache__/
+*.pyc
+*.ipa
+*.p12
+*.p8
+*.mobileprovision
+.env
+.env.*
+Data/
+Libraries/
+Cache/

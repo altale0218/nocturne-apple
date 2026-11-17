@@ -1,0 +1,82 @@
+{
+  "name": "Apple unsigned build",
+  "on": {
+    "push": { "tags": ["nocturne-apple-ci-*"] },
+    "workflow_dispatch": {
+      "inputs": {
+        "runner": {
+          "description": "Standard hosted macOS runner",
+          "type": "choice",
+          "options": [
+            "macos-15",
+            "macos-15-intel"
+          ],
+          "default": "macos-15",
+          "required": false
+        },
+        "extended_photos": {
+          "description": "Also try system Photos authorization on older simulators",
+          "type": "boolean",
+          "default": false,
+          "required": false
+        }
+      }
+    }
+  },
+  "permissions": {
+    "contents": "read"
+  },
+  "concurrency": {
+    "group": "nocturne-apple-native-build",
+    "cancel-in-progress": false
+  },
+  "jobs": {
+    "build": {
+      "runs-on": "${{ inputs.runner || (startsWith(github.ref_name, 'nocturne-apple-ci-intel-') && 'macos-15-intel') || 'macos-15' }}",
+      "timeout-minutes": 35,
+      "steps": [
+        {
+          "name": "Checkout source",
+          "uses": "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
+          "with": {
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Check source and package boundaries",
+          "run": "python3 ci/check_source.py"
+        },
+        {
+          "name": "Test artifact packaging and source boundary",
+          "run": "python3 ci/test_packaging.py"
+        },
+        {
+          "name": "Run native tests and build unsigned IPA",
+          "env": { "NOCTURNE_EXTENDED_PHOTOS": "${{ inputs.extended_photos && '1' || '0' }}" },
+          "run": "python3 -u ci/build_ipad.py"
+        },
+        {
+          "name": "Save successful unsigned IPA",
+          "uses": "actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f",
+          "with": {
+            "name": "Nocturne-Apple-unsigned-${{ github.run_number }}",
+            "path": "output/Nocturne-unsigned.ipa\noutput/IPA-SHA256.txt\noutput/build-report.json",
+            "if-no-files-found": "error",
+            "retention-days": 7
+          }
+        },
+        {
+          "name": "Save diagnostics even on failure",
+          "if": "${{ always() }}",
+          "uses": "actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f",
+          "with": {
+            "name": "Nocturne-build-logs-${{ github.run_number }}",
+            "path": "output/*.log\noutput/*.json\noutput/*.xcresult",
+            "if-no-files-found": "warn",
+            "retention-days": 7
+          }
+        }
+      ]
+    }
+  }
+}
