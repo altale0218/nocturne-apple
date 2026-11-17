@@ -27,12 +27,12 @@
     "contents": "read"
   },
   "concurrency": {
-    "group": "nocturne-apple-native-build-${{ contains(github.ref_name, '-intel-') && 'intel' || 'default' }}",
+    "group": "nocturne-apple-native-build-${{ contains(github.ref_name, '-mac26-') && 'mac26' || contains(github.ref_name, '-intel-') && 'intel' || 'default' }}",
     "cancel-in-progress": false
   },
   "jobs": {
     "build": {
-      "runs-on": "${{ inputs.runner || ((startsWith(github.ref_name, 'nocturne-apple-ci-intel-') || startsWith(github.ref_name, 'nocturne-apple-ci-device-intel-')) && 'macos-15-intel') || 'macos-15' }}",
+      "runs-on": "${{ inputs.runner || (startsWith(github.ref_name, 'nocturne-apple-ci-device-mac26-') && 'macos-26') || ((startsWith(github.ref_name, 'nocturne-apple-ci-intel-') || startsWith(github.ref_name, 'nocturne-apple-ci-device-intel-')) && 'macos-15-intel') || 'macos-15' }}",
       "timeout-minutes": 35,
       "steps": [
         {
