@@ -94,6 +94,17 @@ def run_simulator_tests(family, model, udid, app, simulator_build, env, only_pho
     return result
 
 
+def build_device(base, env, report):
+    run(base+['-configuration','Release','-sdk','iphoneos','-destination','generic/platform=iOS','-derivedDataPath','.build/Device','CODE_SIGNING_ALLOWED=NO','CODE_SIGNING_REQUIRED=NO','CODE_SIGN_IDENTITY=','build'],'device-build.log',env,900)
+    app=ROOT/'.build/Device/Build/Products/Release-iphoneos/Nocturne.app'
+    run(['xcrun','lipo',str(app/'Nocturne'),'-verify_arch','arm64'],'architecture.log',env,60)
+    device_info = plistlib.loads((app / 'Info.plist').read_bytes())
+    if (device_info.get('CFBundleIdentifier') != 'com.nocturne.gallery'
+            or set(device_info.get('UIDeviceFamily', [])) != {1, 2}):
+        raise RuntimeError('Device build must retain the shared iPhone/iPad app identity')
+    report['ipa']=package(app,OUT/'Nocturne-unsigned.ipa');report['deviceBuildPassed']=True
+    (OUT/'IPA-SHA256.txt').write_text(report['ipa']['sha256']+'  Nocturne-unsigned.ipa\n',encoding='utf-8')
+
 def main():
     if sys.platform != 'darwin': raise RuntimeError('Requires an actual macOS runner and Apple Xcode; Windows checks are not a native build')
     OUT.mkdir(exist_ok=True)
@@ -112,11 +123,16 @@ def main():
     try:
         run(['xcodebuild','-version'],'toolchain.log',env,60)
         run(['plutil','-lint','Nocturne.xcodeproj/project.pbxproj','Resources/Info.plist','ci/SimulatorKeychain.plist'],'project.log',env,60)
+        base = ['xcodebuild', '-project', 'Nocturne.xcodeproj', '-scheme', 'Nocturne']
+        report['deviceOnly'] = os.environ.get('GITHUB_REF_NAME', '').startswith('nocturne-apple-ci-device-')
+        if report['deviceOnly']:
+            build_device(base, env, report)
+            print('Device build passed; simulator tests were not run in this device-only workflow.')
+            return
         devices=json.loads(subprocess.check_output(['xcrun','simctl','list','devices','available','--json'],env=env,text=True))['devices']
         sdk_version=subprocess.check_output(['xcrun','--sdk','iphonesimulator','--show-sdk-version'],env=env,text=True).strip()
         report['simulatorSDK'] = sdk_version
         simulators = select_simulators(devices, sdk_version)
-        base = ['xcodebuild', '-project', 'Nocturne.xcodeproj', '-scheme', 'Nocturne']
         simulator_build = base + [
             '-configuration', 'Debug', '-sdk', 'iphonesimulator',
             '-derivedDataPath', '.build/Simulator',
@@ -128,15 +144,7 @@ def main():
         for family, (model, udid) in simulators.items():
             report['simulators'][family] = run_simulator_tests(family, model, udid, simulator_app, simulator_build, env)
         report['nativeTestsPassed']=True
-        run(base+['-configuration','Release','-sdk','iphoneos','-destination','generic/platform=iOS','-derivedDataPath','.build/Device','CODE_SIGNING_ALLOWED=NO','CODE_SIGNING_REQUIRED=NO','CODE_SIGN_IDENTITY=','build'],'device-build.log',env,900)
-        app=ROOT/'.build/Device/Build/Products/Release-iphoneos/Nocturne.app'
-        run(['xcrun','lipo',str(app/'Nocturne'),'-verify_arch','arm64'],'architecture.log',env,60)
-        device_info = plistlib.loads((app / 'Info.plist').read_bytes())
-        if (device_info.get('CFBundleIdentifier') != 'com.nocturne.gallery'
-                or set(device_info.get('UIDeviceFamily', [])) != {1, 2}):
-            raise RuntimeError('Device build must retain the shared iPhone/iPad app identity')
-        report['ipa']=package(app,OUT/'Nocturne-unsigned.ipa');report['deviceBuildPassed']=True
-        (OUT/'IPA-SHA256.txt').write_text(report['ipa']['sha256']+'  Nocturne-unsigned.ipa\n',encoding='utf-8')
+        build_device(base, env, report)
         extended = env.get('NOCTURNE_EXTENDED_PHOTOS') == '1'
         report['extendedPhotosRequested'] = extended
         if extended and not all(row['nativePhotosTested'] for row in report['simulators'].values()):
