@@ -371,7 +371,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
     @objc private func toggleControls() { controls.isHidden.toggle(); view.setNeedsLayout(); activate() }
     @objc private func activate() {
         fade?.cancel(); chrome.alpha = 1; facts.alpha = 1; dateLabel.alpha = 1
-        let work = DispatchWorkItem { [weak self] in UIView.animate(withDuration: 0.32) { self?.chrome.alpha = 0.2; self?.facts.alpha = 0.45; self?.dateLabel.alpha = 0.45 } }
+        let work = DispatchWorkItem { [weak self] in UIView.animate(withDuration: 0.32) { self?.facts.alpha = 0.65; self?.dateLabel.alpha = 0.45 } }
         fade = work; DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
     }
     func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
@@ -458,6 +458,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
               let window = view.window, !storage.state.settings.reducedMotion else { return }
         openingImage199 = nil; openingFrame199 = nil
         let end = mediaFrame199(), ghost = ghost199(photo, at: view.convert(origin, from: window))
+        guard !end.isEmpty else { ghost.removeFromSuperview(); return }
         media.alpha = 0; chrome.alpha = 0; controls.alpha = 0
         UIView.animate(withDuration: 0.34, delay: 0, usingSpringWithDamping: 0.87, initialSpringVelocity: 0, options: [.allowUserInteraction], animations: {
             ghost.frame = end; ghost.layer.cornerRadius = 0
@@ -466,14 +467,14 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
     }
     @objc private func close() {
         guard !closing199 else { return }; closing199 = true
-        let photo = image.image
+        let photo = image.image ?? openingImage199
         let start = mediaFrame199()
         let target = assets.indices.contains(selected) ? returnFrame199?(assets[selected].localIdentifier, view) : nil
         generation += 1; stopPlayer(); repository.manager.cancelImageRequest(request)
         if let photo = photo, let target = target, !start.isEmpty, !storage.state.settings.reducedMotion {
             let ghost = ghost199(photo, at: start)
             ghost.layer.cornerRadius = 0; media.alpha = 0
-            UIView.animate(withDuration: 0.31, delay: 0, usingSpringWithDamping: 0.9, initialSpringVelocity: 0, animations: {
+            UIView.animate(withDuration: 0.31, delay: 0, usingSpringWithDamping: 0.9, initialSpringVelocity: 0, options: [.beginFromCurrentState], animations: {
                 ghost.frame = target; ghost.layer.cornerRadius = 10
                 self.backdrop.alpha = 0; self.view.backgroundColor = .clear
                 self.chrome.alpha = 0; self.controls.alpha = 0

@@ -16,23 +16,38 @@ final class AppCoordinator {
     init(window: UIWindow, rootSink193: ((UIViewController) -> Void)? = nil) { self.window = window; self.rootSink193 = rootSink193 }
     private func showRoot193(_ controller: UIViewController) { if let sink = rootSink193 { sink(controller) } else { window.rootViewController = controller } }
     func start() {
-        do {
-            let original = try SecureStorage()
-            let parent = original.root.deletingLastPathComponent()
-            if original.envelope.privateMode {
-                private193 = original
-                ordinary193 = try SecureStorage(root: parent.appendingPathComponent("NocturneOrdinary193", isDirectory: true))
-            } else {
-                ordinary193 = original
-                private193 = try SecureStorage(root: parent.appendingPathComponent("NocturnePrivate193", isDirectory: true))
-            }
-            if let ordinary = ordinary193 {
-                try ordinary.unlock()
-                enter(ordinary)
-            }
-        }
-        catch { let controller = UIViewController(); controller.view.backgroundColor = .white; let label = UILabel(); label.text = "Nocturne: storage unavailable"; label.textAlignment = .center; label.frame = CGRect(x: 20, y: 100, width: 300, height: 80); controller.view.addSubview(label); showRoot193(controller) }
+        let initial = UIViewController()
+        initial.view.backgroundColor = Theme.background(false)
+        showRoot193(initial)
         if rootSink193 == nil { window.makeKeyAndVisible() }
+        work.async { [weak self] in
+            guard let self = self else { return }
+            do {
+                let original = try SecureStorage()
+                let parent = original.root.deletingLastPathComponent()
+                let ordinary: SecureStorage
+                let vault: SecureStorage
+                if original.envelope.privateMode {
+                    vault = original
+                    ordinary = try SecureStorage(root: parent.appendingPathComponent("NocturneOrdinary193", isDirectory: true))
+                } else {
+                    ordinary = original
+                    vault = try SecureStorage(root: parent.appendingPathComponent("NocturnePrivate193", isDirectory: true))
+                }
+                do { try ordinary.unlock() }
+                catch {
+                    DispatchQueue.main.async {
+                        self.ordinary193 = ordinary; self.private193 = vault
+                        self.showStorageFailure193()
+                    }
+                    return
+                }
+                DispatchQueue.main.async {
+                    self.ordinary193 = ordinary; self.private193 = vault
+                    if self.active193 { self.enter(ordinary) } else { ordinary.lock() }
+                }
+            } catch { DispatchQueue.main.async { self.showStorageFailure193() } }
+        }
     }
     private func landing(from source: UIViewController? = nil, importing asset: MediaAsset193? = nil) {
         guard let storage = private193, let presenter = source ?? window.rootViewController,
@@ -54,7 +69,7 @@ final class AppCoordinator {
                     try storage.unlock(password: password)
                     if privateCreate { guard let password = password else { throw StorageError.locked }; try storage.enablePrivate(password: password); try storage.save() }
                     DispatchQueue.main.async {
-                        guard token == self.authEpoch193, self.active193, let controller = controller else { storage.lock(); return }
+                        guard token == self.authEpoch193, self.active193, let controller = controller else { storage.lock(); controller?.busy(false); return }
                         controller.dismiss(animated: true, completion: didUnlock)
                     }
                 } catch { storage.lock(); DispatchQueue.main.async { controller?.busy(false); controller?.error193(error) } }
@@ -64,7 +79,7 @@ final class AppCoordinator {
             guard let self = self else { return }; controller?.busy(true)
             let token = self.authEpoch193
             self.work.async {
-                do { try storage.unlockBiometric193(); DispatchQueue.main.async { guard token == self.authEpoch193, self.active193 else { storage.lock(); return }; guard let controller = controller else { storage.lock(); return }; controller.dismiss(animated: true, completion: didUnlock) } }
+                do { try storage.unlockBiometric193(); DispatchQueue.main.async { guard token == self.authEpoch193, self.active193 else { storage.lock(); controller?.busy(false); return }; guard let controller = controller else { storage.lock(); return }; controller.dismiss(animated: true, completion: didUnlock) } }
                 catch { storage.lock(); DispatchQueue.main.async { controller?.busy(false); controller?.status193("生物识别未完成或授权已失效，请使用密码。") } }
             }
         }
@@ -92,15 +107,13 @@ final class AppCoordinator {
         showRoot193(gallery)
         if storage.envelope.privateMode {
             repo.synchronize()
-            gallery.showRelease()
             return
         }
         let lease = try? storage.resourceLease193()
-        repo.requestAccess { [weak gallery, weak repo] allowed in
+        repo.requestAccess { [weak repo] allowed in
             guard let repo = repo, let lease = lease,
                   (try? storage.validateResourceLease193(lease)) != nil else { return }
-            guard let gallery = gallery else { return }
-            if allowed && storage.state.settings.automaticSync { repo.synchronize() }
+            if allowed { repo.synchronize() }
             gallery.showRelease()
         }
     }

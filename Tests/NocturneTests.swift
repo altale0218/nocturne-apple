@@ -734,3 +734,27 @@ final class BrowserPersistence193Tests: XCTestCase {
         XCTAssertTrue(try store.browserEntries193(favorites: false, lease: lease).isEmpty)
     }
 }
+
+final class GalleryDateLayout199Tests: XCTestCase {
+    func testDateGroupsStartSeparateRowsAndAlignLeft() {
+        for mode in [GalleryMode.tiles, .galaxy] {
+            let layout = GalleryLayout()
+            let collection = UICollectionView(frame: CGRect(x: 0, y: 0, width: 390, height: 700), collectionViewLayout: layout)
+            layout.mode = mode
+            layout.square = false
+            layout.ratios = [1, 1.5, 0.7]
+            layout.dayStarts = [0: "昨天", 2: "今天"]
+            collection.layoutIfNeeded()
+            layout.prepare()
+            let date = IndexPath(item: 2, section: 0)
+            let prior = IndexPath(item: 1, section: 0)
+            guard let frame = layout.layoutAttributesForItem(at: date)?.frame,
+                  let previous = layout.layoutAttributesForItem(at: prior)?.frame,
+                  let title = layout.layoutAttributesForSupplementaryView(ofKind: GalleryLayout.dayHeader, at: date)?.frame
+            else { return XCTFail("Missing layout geometry") }
+            XCTAssertEqual(frame.minX, 12, accuracy: 0.01)
+            XCTAssertGreaterThanOrEqual(title.minY, previous.maxY)
+            XCTAssertGreaterThanOrEqual(frame.minY, title.maxY)
+        }
+    }
+}

@@ -50,7 +50,7 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         case "language": return "语言 / Language / 言語"
         case "chrome": return Strings.text("主题取色", "Theme colors", "テーマの色", "主題取色")
         case "motion": return Strings.text("减少动态效果", "Reduce motion", "視差効果を減らす", "減少動態效果")
-        case "names": return Strings.text("显示名称", "Show names", "名前を表示", "顯示名稱")
+        case "names": return Strings.text("按拍摄日期分组", "Group by capture date", "撮影日ごとにまとめる", "按拍攝日期分組")
         case "views": return Strings.text("显示观看次数", "Show view counts", "閲覧回数を表示", "顯示觀看次數")
         case "duration": return Strings.text("显示视频时长", "Show video duration", "動画の長さを表示", "顯示影片時長")
         case "sync": return Strings.text("开启自动同步", "Sync on open", "起動時に同期", "開啟自動同步")
@@ -71,7 +71,7 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         let id = sections[indexPath.section][indexPath.row], p = storage.state.settings
         cell.detailTextLabel?.text = nil
         cell.textLabel?.text = label(id); cell.textLabel?.font = .systemFont(ofSize: 14); cell.textLabel?.numberOfLines = 2
-        let switches = ["square": p.squareTiles, "squareCorners": p.roundedSquare, "motion": p.reducedMotion, "names": p.showNames, "views": p.showViews, "duration": p.showDuration, "sync": p.automaticSync, "preview": p.previewVideos, "viewerAll": p.viewerBackgroundAll122 ?? false, "date": p.showDate122 ?? true, "hold": p.holdSpeed122 ?? true, "openMark": p.openAtMarker122 ?? true, "markLoop": p.markerPreview122 ?? false]
+        let switches = ["square": p.squareTiles, "squareCorners": p.roundedSquare, "motion": p.reducedMotion, "names": p.groupDates199 ?? true, "views": p.showViews, "duration": p.showDuration, "sync": p.automaticSync, "preview": p.previewVideos, "viewerAll": p.viewerBackgroundAll122 ?? false, "date": p.showDate122 ?? true, "hold": p.holdSpeed122 ?? true, "openMark": p.openAtMarker122 ?? true, "markLoop": p.markerPreview122 ?? false]
         if let value = switches[id] {
             let toggle = (cell.accessoryView as? UISwitch) ?? UISwitch()
             toggle.removeTarget(self, action: #selector(toggled(_:)), for: .valueChanged)
@@ -101,7 +101,7 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
     }
     @objc private func toggled(_ sender: UISwitch) {
         storage.update { state in
-            switch sender.accessibilityIdentifier { case "square": state.settings.squareTiles193 = sender.isOn; case "squareCorners": state.settings.roundedSquare193 = sender.isOn; case "motion": state.settings.reducedMotion = sender.isOn; case "names": state.settings.showNames = sender.isOn; case "views": state.settings.showViews = sender.isOn; case "duration": state.settings.showDuration = sender.isOn; case "sync": state.settings.automaticSync = sender.isOn; case "preview": state.settings.previewVideos = sender.isOn; case "viewerAll": state.settings.viewerBackgroundAll122 = sender.isOn; case "date": state.settings.showDate122 = sender.isOn; case "hold": state.settings.holdSpeed122 = sender.isOn; case "openMark": state.settings.openAtMarker122 = sender.isOn; case "markLoop": state.settings.markerPreview122 = sender.isOn; default: break }
+            switch sender.accessibilityIdentifier { case "square": state.settings.squareTiles193 = sender.isOn; case "squareCorners": state.settings.roundedSquare193 = sender.isOn; case "motion": state.settings.reducedMotion = sender.isOn; case "names": state.settings.groupDates199 = sender.isOn; case "views": state.settings.showViews = sender.isOn; case "duration": state.settings.showDuration = sender.isOn; case "sync": state.settings.automaticSync = sender.isOn; case "preview": state.settings.previewVideos = sender.isOn; case "viewerAll": state.settings.viewerBackgroundAll122 = sender.isOn; case "date": state.settings.showDate122 = sender.isOn; case "hold": state.settings.holdSpeed122 = sender.isOn; case "openMark": state.settings.openAtMarker122 = sender.isOn; case "markLoop": state.settings.markerPreview122 = sender.isOn; default: break }
         }
         try? storage.save()
         pendingGalleryRefresh = true

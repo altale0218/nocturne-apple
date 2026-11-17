@@ -330,6 +330,41 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         }
         CATransaction.commit()
     }
+    @available(iOS 15, *)
+    private func displayMenu199() -> [UIMenuElement] {
+        let p = storage.state.settings
+        func action(_ title: String, _ icon: String, _ selected: Bool, _ change: @escaping (inout Preferences) -> Void) -> UIAction {
+            UIAction(title: title, image: UIImage(systemName: icon), state: selected ? .on : .off) { [weak self] _ in
+                guard let self = self else { return }
+                self.storage.update { change(&$0.settings) }
+                self.applyTheme(); self.reload(); try? self.storage.save()
+            }
+        }
+        let modes = UIMenu(title: "布局", options: .displayInline, children: [
+            action("平铺", "square.grid.2x2", p.mode == .tiles) { $0.mode = .tiles },
+            action("星河", "sparkles", p.mode == .galaxy) { $0.mode = .galaxy }
+        ])
+        let sizes = UIMenu(title: "片源大小", image: UIImage(systemName: "arrow.up.left.and.arrow.down.right"), children:
+            ["密集", "紧凑", "均衡", "大图"].enumerated().map { i, title in
+                action(title, "square.grid.2x2", p.sizePreset == i) { $0.gallerySize122 = i }
+            })
+        let sorting = UIMenu(title: "排序", image: UIImage(systemName: "arrow.up.arrow.down"), children:
+            ["拍摄时间 · 新到旧", "拍摄时间 · 旧到新", "最多观看"].enumerated().map { i, title in
+                action(title, i == 2 ? "eye" : "calendar", (p.sortGallery199 ?? 0) == i) { $0.sortGallery199 = i }
+            })
+        let toggles = UIMenu(title: "显示", image: UIImage(systemName: "slider.horizontal.3"), children: [
+            action("按拍摄日期分组", "calendar", (p.groupDates199 ?? true) && (p.sortGallery199 ?? 0) != 2) {
+                $0.groupDates199 = !($0.groupDates199 ?? true) || $0.sortGallery199 == 2
+                if $0.sortGallery199 == 2 { $0.sortGallery199 = 0 }
+            },
+            action("1:1 方形缩略图", "square", p.squareTiles) { $0.squareTiles193 = !$0.squareTiles },
+            action("方形卡片保留圆角", "app", p.roundedSquare) { $0.roundedSquare193 = !$0.roundedSquare },
+            action("显示视频时长", "timer", p.showDuration) { $0.showDuration.toggle() },
+            action("显示观看次数", "eye", p.showViews) { $0.showViews.toggle() }
+        ])
+        return [modes, sizes, sorting, toggles]
+    }
+
     @objc private func chooseMode() {
         if selecting193 { selected193 = selected193.count == shown.count ? [] : Set(shown.map(\.localIdentifier)); collection.reloadData(); selectionHeader193(); return }
         let alert = UIAlertController(title: "排布与显示", message: nil, preferredStyle: .actionSheet)
@@ -574,6 +609,15 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
             guard let button = toolbar.arrangedSubviews[index] as? UIButton else { continue }; button.isEnabled = !deleting193
             if #available(iOS 13, *) { let image = UIImage(systemName: symbol); button.setImage(image, for: .normal); if #available(iOS 15, *), var config = button.configuration { config.image = image; button.configuration = config } }
             else { button.setTitle(selecting193 ? (index == 0 ? "×" : index == 2 ? "✓" : "•••") : (index == 0 ? "☰" : index == 2 ? "▦" : "↻"), for: .normal) }
+        }
+        if #available(iOS 15, *), let menuButton = toolbar.arrangedSubviews[2] as? UIButton {
+            if selecting193 { menuButton.menu = nil; menuButton.showsMenuAsPrimaryAction = false }
+            else if menuButton.menu == nil {
+                menuButton.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] done in
+                    done(self?.displayMenu199() ?? [])
+                }])
+                menuButton.showsMenuAsPrimaryAction = true
+            }
         }
     }
     func collectionView(_ collectionView: UICollectionView, didDeselectItemAt indexPath: IndexPath) {

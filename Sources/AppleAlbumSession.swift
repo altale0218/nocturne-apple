@@ -92,10 +92,10 @@ private struct AppleAlbumSession {
     static func identifier() -> String { UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "") }
 
     func transfer(peer: AppleSyncTransport.Peer, local: AppleSyncTransport.Identity, album: PhotoSyncLibrary.Album,
-                  sendTo androidTarget: String?, receiveFrom androidSource: String?, allowICloud: Bool,
+                  sendTo androidTarget: String?, receiveFrom androidSource: String?, receiveAllAndroid: Bool = false, allowICloud: Bool,
                   progress: @escaping (TransferStatus) -> Void) async throws -> String {
-        guard androidTarget != nil || androidSource != nil else { throw MediaError193.malformed }
-        guard album.identifier != PhotoSyncLibrary.Album.recent.identifier || androidSource == nil else { throw MediaError193.unavailable }
+        guard !(receiveAllAndroid && androidSource != nil), androidTarget != nil || androidSource != nil || receiveAllAndroid else { throw MediaError193.malformed }
+        guard album.identifier != PhotoSyncLibrary.Album.recent.identifier || (androidSource == nil && !receiveAllAndroid) else { throw MediaError193.unavailable }
         let library = PhotoSyncLibrary(storage: storage)
         var source: PhotoAlbumSource?
         if androidTarget != nil {
@@ -107,16 +107,18 @@ private struct AppleAlbumSession {
                 progress(TransferStatus(message: "核验原片 \(done)/\(total)"))
             }
         }
-        let target = androidSource.map { _ in
+        let target: PhotoAlbumTarget?
+        if androidSource != nil || receiveAllAndroid {
+            target =
             PhotoAlbumTarget(storage: storage, albumID: album.identifier, peer: peer.identity.id,
                              lease: lease, allowICloud: allowICloud, prepared: source) { done, total in
                 progress(TransferStatus(message: "核对本机相册原件 \(done)/\(total)"))
             }
-        }
+        } else { target = nil }
         let resume = TransferAttempt()
         do {
             return try await transferPass(peer: peer, local: local, source: source, target: target,
-                androidTarget: androidTarget, androidSource: androidSource, attempt: resume, progress: progress)
+                androidTarget: androidTarget, androidSource: androidSource, receiveAllAndroid: receiveAllAndroid, attempt: resume, progress: progress)
         } catch {
             guard resume.scopeCommitted, Self.canReconnect(error) else { throw error }
             try Task.checkCancellation()
@@ -126,7 +128,7 @@ private struct AppleAlbumSession {
             try storage.validateResourceLease193(lease)
             source?.rewindForReconnect()
             return try await transferPass(peer: peer, local: local, source: source, target: target,
-                androidTarget: androidTarget, androidSource: androidSource, attempt: TransferAttempt(),
+                androidTarget: androidTarget, androidSource: androidSource, receiveAllAndroid: receiveAllAndroid, attempt: TransferAttempt(),
                 resuming: true, progress: progress)
         }
     }
@@ -144,7 +146,7 @@ private struct AppleAlbumSession {
 
     private func transferPass(peer: AppleSyncTransport.Peer, local: AppleSyncTransport.Identity,
                               source: PhotoAlbumSource?, target: PhotoAlbumTarget?,
-                              androidTarget: String?, androidSource: String?,
+                              androidTarget: String?, androidSource: String?, receiveAllAndroid: Bool,
                               attempt: TransferAttempt, resuming: Bool = false,
                               progress: @escaping (TransferStatus) -> Void) async throws -> String {
         try Task.checkCancellation()
@@ -156,7 +158,8 @@ private struct AppleAlbumSession {
             var request: [String: Any] = ["job": job, "epoch": epoch, "scope": "ordinary195"]
             request["op"] = "scope195"; request["platform"] = "ios"; request["operation"] = "album1"
             if let androidTarget = androidTarget { request["upload"] = androidTarget }
-            if let androidSource = androidSource { request["download"] = androidSource }
+            if receiveAllAndroid { request["downloadScope"] = "allOrdinary199" }
+            else if let androidSource = androidSource { request["download"] = androidSource }
             try await channel.sendObject(1, request)
             let ready = try await channel.receiveObject(1)
             let context: [String: String] = ["job": job, "epoch": epoch, "scope": "ordinary195"]
@@ -172,6 +175,7 @@ private struct AppleAlbumSession {
                 guard ready["op"] as? String == "scope-ready195", ready["operation"] as? String == "album1",
                       ready["platform"] as? String == "android" else { throw MediaError193.verification }
             }
+            if receiveAllAndroid && (ready["downloadScope"] as? String) != "allOrdinary199" { throw AppleSyncTransport.Failure.rejected("android-all-version") }
             try await channel.sendObject(1, Self.control("scope-commit195", context))
             attempt.scopeCommitted = true
             var details: [String] = []
@@ -261,6 +265,8 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
     private let album = UIButton(type: .system), pairing = UIButton(type: .system), start = UIButton(type: .system)
     private let manage = UIButton(type: .system)
     private let address = UITextField(), androidAlbum = UITextField()
+    private let useAllAndroid = UISwitch()
+    private let androidScopeRow199 = UIStackView()
     private let direction = UISegmentedControl(items: ["发送到 Android", "接收至 iOS", "双向"])
     private let useCloud = UISwitch(), status = UILabel()
     private let syncProgress = UIProgressView(progressViewStyle: .default)
@@ -304,6 +310,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         address.addTarget(self, action: #selector(scopeChanged), for: .editingChanged)
         androidAlbum.addTarget(self, action: #selector(scopeChanged), for: .editingChanged)
         direction.accessibilityLabel = "相册同步方向"
+        useAllAndroid.addTarget(self, action: #selector(scopeChanged), for: .valueChanged)
         direction.addTarget(self, action: #selector(scopeChanged), for: .valueChanged)
         useCloud.addTarget(self, action: #selector(scopeChanged), for: .valueChanged)
         album.configuration = Self.action(title: "选择 iOS 相册", symbol: "photo.on.rectangle.angled")
@@ -336,19 +343,26 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         syncProgress.accessibilityLabel = "本批次影像传输进度"
         nearbyDevices.axis = .vertical
         nearbyDevices.spacing = 8
-        let pairCard = Self.card("连接设备", fields: [nearbyDevices, address, pairing])
+        let networkHint = Self.label("在 Android 打开「同步设备」。如果热点上没有自动发现，请手动填写 Android 页面显示的局域网 IP。", style: .footnote)
+        networkHint.textColor = .secondaryLabel
+        let pairCard = Self.card("连接设备", fields: [nearbyDevices, address, pairing, networkHint])
         refreshNearbyDevices()
         NotificationCenter.default.addObserver(self, selector: #selector(stopDiscovery),
                                                name: UIApplication.didEnterBackgroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(startDiscovery),
                                                name: UIApplication.didBecomeActiveNotification, object: nil)
-        let albumCard = Self.card("同步范围", fields: [album, manage, androidAlbum, direction, cloud])
+        let allAndroidLabel = Self.label("接收 Android 全部普通图库", style: .subheadline)
+        useAllAndroid.accessibilityLabel = allAndroidLabel.text
+        androidScopeRow199.addArrangedSubview(allAndroidLabel); androidScopeRow199.addArrangedSubview(useAllAndroid)
+        androidScopeRow199.alignment = .center; androidScopeRow199.spacing = 10
+        let albumCard = Self.card("同步范围", fields: [album, manage, direction, androidScopeRow199, androidAlbum, cloud])
         let scroll = UIScrollView()
         scroll.keyboardDismissMode = .interactive
         let stack = UIStackView(arrangedSubviews: [pairCard, albumCard, start, statusCard])
         stack.axis = .vertical; stack.spacing = 14
         view.addSubview(scroll); scroll.addSubview(stack)
         scroll.translatesAutoresizingMaskIntoConstraints = false; stack.translatesAutoresizingMaskIntoConstraints = false
+        scopeChanged()
         let preferredWidth = stack.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -36)
         preferredWidth.priority = .defaultHigh
         NSLayoutConstraint.activate([
@@ -625,7 +639,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
 
     private func setBusy(_ running: Bool) {
         nearbyDevices.isUserInteractionEnabled = !running
-        let controls: [UIControl] = [address, androidAlbum, direction, pairing, album, manage, useCloud, start]
+        let controls: [UIControl] = [address, androidAlbum, direction, pairing, album, manage, useCloud, useAllAndroid, start]
         controls.forEach { $0.isEnabled = !running }
         navigationController?.isModalInPresentation = running
         navigationItem.leftBarButtonItem = running
@@ -691,7 +705,14 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         present(prompt, animated: true)
     }
 
-    @objc private func scopeChanged() { start.configuration?.title = "开始同步" }
+    @objc private func scopeChanged() {
+        let selected = direction.selectedSegmentIndex
+        androidScopeRow199.isHidden = selected == 0
+        let all = selected != 0 && useAllAndroid.isOn
+        androidAlbum.isHidden = selected == 1 && all
+        androidAlbum.placeholder = all ? "Android 接收相册名称" : "Android 同步相册名称"
+        start.configuration?.title = selected == 0 ? "发送到 Android" : selected == 1 ? "接收至 iOS" : "开始双向同步"
+    }
 
     private func selectAlbum(_ value: PhotoSyncLibrary.Album) {
         scopeChanged()
@@ -772,13 +793,16 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         view.endEditing(true)
         let ip = address.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let target = androidAlbum.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard let selected = chosen, !target.isEmpty, target.utf16.count <= 72, !target.contains("/"),
-              !target.contains("\\"), target != ".", target != "..",
-              target.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
-            status.text = "请选择 iOS 相册并填写 Android 相册名称。"
+        guard let selected = chosen else { status.text = "请先选择 iOS 相册或全部图库。"; return }
+        let selectedDirection = selected.identifier == PhotoSyncLibrary.Album.recent.identifier ? 0 : direction.selectedSegmentIndex
+        let allAndroid = selectedDirection != 0 && useAllAndroid.isOn, cloud = useCloud.isOn
+        let needsFolder = selectedDirection != 1 || !allAndroid
+        guard !needsFolder || (!target.isEmpty && target.utf16.count <= 72 && !target.contains("/") &&
+              !target.contains("\\") && target != "." && target != ".." &&
+              target.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) })) else {
+            status.text = allAndroid ? "请填写 Android 接收相册名称。" : "请填写 Android 同步相册名称。"
             return
         }
-        let selectedDirection = selected.identifier == PhotoSyncLibrary.Album.recent.identifier ? 0 : direction.selectedSegmentIndex, cloud = useCloud.isOn
         scopeChanged()
         task(keepsScreenAwake: true) {
             let session = AppleAlbumSession(storage: self.storage, lease: try self.storage.resourceLease193())
@@ -787,7 +811,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
             let peer = try paired.connect(address: ip)
             let statusEpoch = self.statusEpoch
             self.status.text = try await session.transfer(peer: peer, local: session.local(settings), album: selected,
-                sendTo: selectedDirection == 1 ? nil : target, receiveFrom: selectedDirection == 0 ? nil : target,
+                sendTo: selectedDirection == 1 ? nil : target, receiveFrom: selectedDirection == 0 || allAndroid ? nil : target, receiveAllAndroid: allAndroid,
                 allowICloud: cloud) { [weak self] update in
                     DispatchQueue.main.async {
                         guard let self = self, self.statusEpoch == statusEpoch else { return }
@@ -824,6 +848,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         case AppleSyncTransport.Failure.address: status.text = "请输入同一局域网内 Android 的 IP 地址。"
         case AppleSyncTransport.Failure.certificate, AppleSyncTransport.Failure.changedPeer: status.text = "Android 设备的身份无法核对，请检查地址或重新配对。"
         case AppleSyncTransport.Failure.authentication: status.text = "请先配对 Android。"
+        case AppleSyncTransport.Failure.rejected("android-all-version"): status.text = "当前 Android 版本不支持发送全部图库。可先选择指定相册。"
         case AppleSyncTransport.Failure.rejected("album-version"): status.text = "Android 端需要支持手机相册同步的版本。"
         case AppleSyncTransport.Failure.declined, MediaError193.cancelled, is CancellationError:
             status.text = "已取消。再次同步时会先核对已接收原片。"
