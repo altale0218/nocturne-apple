@@ -146,7 +146,9 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         let safe = view.safeAreaInsets, width = max(1, view.bounds.width - safe.left - safe.right)
         let photo = assets.indices.contains(selected) && assets[selected].mediaType == .image
         let stripTop: CGFloat = photo ? 0 : 98
-        let height: CGFloat = controls.isHidden ? 0 : stripTop + 54 + safe.bottom
+        let showStrip = storage.state.settings.showFilmstrip204 ?? true
+        strip.isHidden = !showStrip
+        let height: CGFloat = controls.isHidden ? 0 : stripTop + (showStrip ? 54 : 0) + safe.bottom
         controls.frame = CGRect(x: safe.left, y: view.bounds.height - height, width: width, height: height)
         timeline.frame = CGRect(x: 18, y: 20, width: width - 36, height: 32)
         actions.frame = CGRect(x: 12, y: 56, width: width - 24, height: 40)
@@ -159,7 +161,8 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         let stageBottom = controls.isHidden ? view.bounds.height - safe.bottom : controls.frame.minY + (photo ? 0 : 20)
         stage.frame = CGRect(x: safe.left, y: safe.top, width: width, height: max(1, stageBottom - safe.top))
         if immersive { stage.frame = view.bounds }
-        backdrop.frame = view.bounds; blur.frame = stage.bounds; blur.alpha = CGFloat(max(0, min(1, storage.state.settings.blurRadius / 48))); zoom.frame = stage.bounds
+        backdrop.frame = (storage.state.settings.viewerBackgroundAll122 ?? true) ? view.bounds : stage.frame
+        blur.frame = stage.bounds; blur.alpha = CGFloat(max(0, min(1, storage.state.settings.blurRadius / 48))); zoom.frame = stage.bounds
         if zoom.zoomScale == 1 { media.frame = CGRect(origin: .zero, size: zoom.bounds.size); zoom.contentSize = media.bounds.size }
         image.frame = photo && !immersive ? fittedMediaRect(bottomAligned: true) : media.bounds
         precision.frame = media.bounds; live193.frame = image.frame; playerLayer.frame = photo ? image.frame : media.bounds
@@ -221,7 +224,9 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         if video {
             request = repository.video(asset) { [weak self] item in
                 guard let self = self, self.generation == token, let item = item else { return }
-                let player = AVPlayer(playerItem: item); self.player = player; self.playerLayer.player = player
+                let player = AVPlayer(playerItem: item)
+                player.isMuted = self.storage.state.settings.viewerMuted204 ?? false
+                self.player = player; self.playerLayer.player = player
                 self.frameRate = max(1, Double(item.asset.tracks(withMediaType: .video).first?.nominalFrameRate ?? 30))
                 self.timeline.maximumValue = Float(asset.duration)
                 self.periodic = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 30), queue: .main) { [weak self] time in
@@ -314,6 +319,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
     }
     @objc private func doubleTapped(_ gesture: UITapGestureRecognizer) {
         if assets[selected].mediaType == .video {
+            guard storage.state.settings.videoDoubleTap204 ?? true else { return }
             let back = gesture.location(in: zoom).x < zoom.bounds.width / 2
             let p = storage.state.settings, delta = back ? -p.skipBackward : p.skipForward
             timeline.value = Float(max(0, min(assets[selected].duration, (player?.currentTime().seconds ?? 0) + delta))); beginSeek(); changeSeek(); endSeek()
@@ -646,7 +652,9 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
             liveHolding193 = true; let token = generation
             repository.video(assets[selected]) { [weak self] item in
                 guard let self = self, self.generation == token, self.liveHolding193, let item = item else { return }
-                let clip = AVPlayer(playerItem: item); self.privateLive193 = clip
+                let clip = AVPlayer(playerItem: item)
+                clip.isMuted = self.storage.state.settings.viewerMuted204 ?? false
+                self.privateLive193 = clip
                 CATransaction.begin(); CATransaction.setDisableActions(true); self.playerLayer.opacity = 0; self.playerLayer.player = clip; CATransaction.commit()
                 self.privateLiveObservation193 = self.playerLayer.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak self] layer, _ in
                     DispatchQueue.main.async {

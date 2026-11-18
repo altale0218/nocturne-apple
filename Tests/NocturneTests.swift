@@ -546,7 +546,17 @@ final class NocturneTests: XCTestCase {
         XCTAssertEqual(storage.state.records["fixture"]?.views, 3)
         XCTAssertEqual(try storage.read(cache), Data([1, 2, 3, 4]))
         XCTAssertEqual(try Data(contentsOf: cache), cacheBytes)
-        try storage.enableOrdinary(password: "Unit-test-password-2026!"); try storage.save(); storage.lock(); try storage.unlock()
+        let header = storage.root.appendingPathComponent("mode.json")
+        let previousHeader = try Data(contentsOf: header)
+        XCTAssertThrowsError(try storage.changePrivatePassword(current: "wrong password", replacement: "New-password-204!"))
+        XCTAssertEqual(try Data(contentsOf: header), previousHeader)
+        try storage.changePrivatePassword(current: "Unit-test-password-2026!", replacement: "New-password-204!")
+        storage.lock()
+        XCTAssertThrowsError(try storage.unlock(password: "Unit-test-password-2026!"))
+        try storage.unlock(password: "New-password-204!")
+        XCTAssertEqual(try storage.read(cache), Data([1, 2, 3, 4]))
+        XCTAssertEqual(try Data(contentsOf: cache), cacheBytes)
+        try storage.enableOrdinary(password: "New-password-204!"); try storage.save(); storage.lock(); try storage.unlock()
         XCTAssertEqual(storage.state.records["fixture"]?.mark, 2.4)
     }
     func testViewsAreHourlyAndOneBookmarkTogglesOffAnywhere() {

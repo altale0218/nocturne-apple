@@ -10,6 +10,7 @@ final class AppCoordinator {
     private let clock = SessionClock()
     private let work = DispatchQueue(label: "com.nocturne.unlock", qos: .userInitiated)
     private var privacyCover: UIView?
+    private var privateTransition: UIView?
     private var authEpoch193 = 0
     private var transientRepository199: PhotoRepository?
     private var active193 = true
@@ -90,18 +91,26 @@ final class AppCoordinator {
     private func switchLibrary193(_ target: SecureStorage) {
         guard active193, target.isUnlocked193 else { target.lock(); return }
         if let session = clock.finish() { storage?.update { $0.sessions.append(session) } }
-        try? storage?.save()
+        do { try storage?.save() }
+        catch {
+            target.lock()
+            let warning = UIAlertController(title: "未能保存图库", message: "请检查可用存储空间后再切换。", preferredStyle: .alert)
+            warning.addAction(UIAlertAction(title: "好", style: .default))
+            window.rootViewController?.present(warning, animated: true)
+            return
+        }
         repository?.lock()
         storage?.lock()
         enter(target)
+        if target.envelope.privateMode { animatePrivate204(opening: true) }
     }
     private func enter(_ storage: SecureStorage) {
         guard storage.isUnlocked193 else { return }
         self.storage = storage
-        Strings.language = "zh-Hans"
+        Strings.language = UserDefaults.standard.string(forKey: "language") ?? storage.state.settings.language
         let repo = PhotoRepository(storage: storage); repository = repo
         let gallery = GalleryController(repository: repo, storage: storage, clock: clock)
-        gallery.locked = { [weak self] in self?.lock() }
+        gallery.locked = { [weak self] in self?.exitPrivate204() }
         gallery.openPrivate193 = { [weak self] in self?.landing() }
         gallery.importPrivate199 = { [weak self] controller, asset in self?.landing(from: controller, importing: asset) }
         showRoot193(gallery)
@@ -138,6 +147,8 @@ final class AppCoordinator {
     }
     func willResignActive() {
         guard storage?.envelope.privateMode == true, privacyCover == nil else { return }
+        privateTransition?.removeFromSuperview()
+        privateTransition = nil
         let cover = UIView(frame: window.bounds); cover.autoresizingMask = [.flexibleWidth, .flexibleHeight]; cover.backgroundColor = Theme.background(false)
         let label = UILabel(); label.text = "Nocturne Private"; label.font = .systemFont(ofSize: 24, weight: .semibold); label.textColor = Theme.blue; label.textAlignment = .center; label.frame = cover.bounds; label.autoresizingMask = [.flexibleWidth, .flexibleHeight]; cover.addSubview(label)
         window.addSubview(cover); privacyCover = cover
@@ -188,6 +199,61 @@ final class AppCoordinator {
             catch { showStorageFailure193() }
         }
         if let cover = privacyCover { window.bringSubviewToFront(cover) }
+    }
+
+    private func exitPrivate204() {
+        guard let storage = storage, storage.envelope.privateMode else { return }
+        if let session = clock.finish() { storage.update { $0.sessions.append(session) } }
+        do { try storage.save() }
+        catch {
+            let warning = UIAlertController(title: "未能保存 Private", message: "请检查可用存储空间后再退出。", preferredStyle: .alert)
+            warning.addAction(UIAlertAction(title: "好", style: .default))
+            window.rootViewController?.present(warning, animated: true)
+            return
+        }
+        let reduced = storage.state.settings.reducedMotion
+        lock()
+        if !reduced { animatePrivate204(opening: false) }
+    }
+
+    private func animatePrivate204(opening: Bool) {
+        guard active193, privacyCover == nil, storage?.state.settings.reducedMotion != true,
+              !UIAccessibility.isReduceMotionEnabled, !window.bounds.isEmpty else { return }
+        privateTransition?.removeFromSuperview()
+        let overlay = UIView(frame: window.bounds)
+        overlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        overlay.isAccessibilityElement = false
+        let gold = UIView(frame: overlay.bounds)
+        gold.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        gold.backgroundColor = UIColor(red: 1, green: 0.847, blue: 0.302, alpha: 1)
+        let shape = UIView(frame: overlay.bounds)
+        shape.backgroundColor = UIColor(red: 1, green: 0.988, blue: 0.949, alpha: 1)
+        shape.clipsToBounds = true
+        let icon = UIImageView()
+        if #available(iOS 13, *) { icon.image = UIImage(systemName: opening ? "lock.open.fill" : "lock.fill") }
+        icon.contentMode = .scaleAspectFit
+        icon.tintColor = UIColor(red: 0.243, green: 0.188, blue: 0.047, alpha: 1)
+        icon.frame = CGRect(x: shape.bounds.midX - 18, y: shape.bounds.midY - 18, width: 36, height: 36)
+        icon.autoresizingMask = [.flexibleLeftMargin, .flexibleRightMargin, .flexibleTopMargin, .flexibleBottomMargin]
+        shape.addSubview(icon)
+        overlay.addSubview(gold)
+        overlay.addSubview(shape)
+        window.addSubview(overlay)
+        privateTransition = overlay
+        let compact = CGRect(x: overlay.bounds.midX - 36, y: overlay.bounds.midY - 36, width: 72, height: 72)
+        if opening { shape.frame = compact; shape.layer.cornerRadius = 36 }
+        UIView.animate(withDuration: 0.30, delay: 0, options: [.curveEaseInOut]) {
+            shape.frame = opening ? overlay.bounds : compact
+            shape.layer.cornerRadius = opening ? 0 : 36
+        } completion: { [weak self, weak overlay] _ in
+            guard let overlay = overlay, self?.privateTransition === overlay else { return }
+            UIView.animate(withDuration: 0.20, delay: 0, options: [.curveEaseOut]) {
+                overlay.alpha = 0
+            } completion: { [weak self] _ in
+                overlay.removeFromSuperview()
+                if self?.privateTransition === overlay { self?.privateTransition = nil }
+            }
+        }
     }
 }
 final class LandingController: UIViewController {
@@ -247,7 +313,12 @@ final class LandingController: UIViewController {
     }
     @objc private func language() {
         let alert = UIAlertController(title: "语言 / Language / 言語", message: nil, preferredStyle: .actionSheet)
-        for (name, code) in [("简体中文", "zh-Hans"), ("English", "en"), ("繁體中文", "zh-Hant"), ("日本語", "ja")] { alert.addAction(UIAlertAction(title: name, style: .default) { _ in Strings.language = code; UserDefaults.standard.set(code, forKey: "language"); let next = LandingController(privateMode: self.privateMode); next.open = self.open; self.view.window?.rootViewController = next }) }
+        for (name, code) in [("简体中文", "zh-Hans"), ("English", "en"), ("繁體中文", "zh-Hant"), ("日本語", "ja")] {
+            alert.addAction(UIAlertAction(title: name, style: .default) { [weak self] _ in
+                Strings.language = code
+                self?.dismiss(animated: true)
+            })
+        }
         alert.addAction(UIAlertAction(title: Strings.cancel, style: .cancel)); alert.popoverPresentationController?.sourceView = buttons.last; alert.popoverPresentationController?.sourceRect = buttons.last?.bounds ?? .zero; present(alert, animated: true)
     }
     func busy(_ value: Bool) { buttons.forEach { $0.isEnabled = !value }; status.text = value ? Strings.text("正在验证…", "Verifying…", "確認中…", "正在驗證…") : "" }

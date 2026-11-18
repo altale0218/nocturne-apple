@@ -487,6 +487,19 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         } else {
             #if !NOCTURNE_LEGACY
             sidebarRows193.append(("打开 Private", "lock.shield", { [weak self] in self?.openPrivate193?() }))
+            sidebarRows193.append(("重复与相似项目", "square.on.square", { [weak self] in
+                guard let self = self, let lease = try? self.storage.resourceLease193() else { return }
+                self.repository.requestAccess { [weak self] allowed in
+                    guard let self = self, self.view.window != nil, self.presentedViewController == nil,
+                          (try? self.storage.validateResourceLease193(lease)) != nil else { return }
+                    guard allowed else { self.permissionNotice(); return }
+                    let controller = AppleAlbumContentsController(library: PhotoSyncLibrary(storage: self.storage),
+                        storage: self.storage, album: .all, lease: lease, scanOnOpen: true)
+                    let navigation = UINavigationController(rootViewController: controller)
+                    navigation.isModalInPresentation = true
+                    self.present(navigation, animated: true)
+                }
+            }))
             sidebarRows193.append(("手机相册同步", "iphone.and.arrow.forward", { [weak self] in
                 guard let self = self else { return }
                 self.present(UINavigationController(rootViewController: AppleAlbumSyncController(storage: self.storage)), animated: true)

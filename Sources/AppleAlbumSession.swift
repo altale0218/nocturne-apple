@@ -947,11 +947,12 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
 }
 
 /// Destructive actions are always scoped to the albums and originals selected on this device.
-private final class AppleAlbumContentsController: UITableViewController, UITableViewDataSourcePrefetching {
+final class AppleAlbumContentsController: UITableViewController, UITableViewDataSourcePrefetching {
     private let library: PhotoSyncLibrary
     private let storage: SecureStorage
     private let album: PhotoSyncLibrary.Album
     private let lease: Int
+    private let scanOnOpen: Bool
     private let images = PHCachingImageManager()
     private var prefetched: [IndexPath: PHAsset] = [:]
     private var assets: [PHAsset] = []
@@ -962,11 +963,12 @@ private final class AppleAlbumContentsController: UITableViewController, UITable
     private let editButton = UIBarButtonItem(title: "管理所选项", style: .plain, target: nil, action: nil)
     private let reviewButton = UIBarButtonItem(image: UIImage(systemName: "square.on.square"), style: .plain, target: nil, action: nil)
 
-    init(library: PhotoSyncLibrary, storage: SecureStorage, album: PhotoSyncLibrary.Album, lease: Int) {
+    init(library: PhotoSyncLibrary, storage: SecureStorage, album: PhotoSyncLibrary.Album, lease: Int, scanOnOpen: Bool = false) {
         self.library = library
         self.storage = storage
         self.album = album
         self.lease = lease
+        self.scanOnOpen = scanOnOpen
         super.init(style: .insetGrouped)
     }
 
@@ -989,6 +991,15 @@ private final class AppleAlbumContentsController: UITableViewController, UITable
         reviewButton.accessibilityLabel = "检查重复与相似项目"
         navigationItem.rightBarButtonItems = [editButton, reviewButton]
         refresh()
+        if scanOnOpen {
+            navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .close, target: self, action: #selector(closeReview))
+            DispatchQueue.main.async { [weak self] in self?.reviewDuplicates() }
+        }
+    }
+
+    @objc private func closeReview() {
+        reviewJob?.cancel()
+        dismiss(animated: true)
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -1137,9 +1148,11 @@ private final class AppleAlbumContentsController: UITableViewController, UITable
         guard !selected.isEmpty else { return }
         let menu = UIAlertController(title: "管理 \(selected.count) 个项目", message: nil, preferredStyle: .actionSheet)
         menu.popoverPresentationController?.barButtonItem = editButton
-        menu.addAction(UIAlertAction(title: "从该相册移除", style: .default) { [weak self] _ in
-            self?.modify(selected, delete: false)
-        })
+        if !album.isLibraryScope {
+            menu.addAction(UIAlertAction(title: "从该相册移除", style: .default) { [weak self] _ in
+                self?.modify(selected, delete: false)
+            })
+        }
         menu.addAction(UIAlertAction(title: "删除系统原片", style: .destructive) { [weak self] _ in
             self?.confirmDeletion(selected)
         })

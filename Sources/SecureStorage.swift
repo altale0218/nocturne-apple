@@ -130,7 +130,6 @@ final class SecureStorage {
         let library = root.appendingPathComponent("library.ncv")
         do { if FileManager.default.fileExists(atPath: library.path) { stateValue = try JSONDecoder().decode(LibraryState.self, from: read(library)) } } catch { master = nil; stateValue = LibraryState(); throw error }
         privateMediaByDigest193 = nil
-        Strings.language = "zh-Hans"
         try maintainCaches()
         if !FileManager.default.fileExists(atPath: library.path) { try save() }
     }
@@ -143,6 +142,23 @@ final class SecureStorage {
         let removed = SecItemDelete(query() as CFDictionary)
         guard removed == errSecSuccess || removed == errSecItemNotFound else { try? writeHeader(previous); throw StorageError.keychain(removed) }
         envelope = changed; sessionEpoch193 += 1; try? removeBiometricKey193()
+    }
+    func changePrivatePassword(current: String, replacement: String) throws {
+        gate.lock(); defer { gate.unlock() }
+        guard envelope.privateMode, let master = master, let salt = envelope.salt, let wrapped = envelope.wrappedKey,
+              replacement.count >= 10 else { throw StorageError.locked }
+        let verified: Data
+        do { verified = try AuthenticatedCipher.open(wrapped, key: AuthenticatedCipher.derive(password: current, salt: salt)) }
+        catch StorageError.authentication { throw StorageError.invalidCredentials }
+        guard verified == master else { throw StorageError.invalidCredentials }
+        let newSalt = try AuthenticatedCipher.random(24)
+        var changed = envelope
+        changed.salt = newSalt
+        changed.wrappedKey = try AuthenticatedCipher.seal(master, key: AuthenticatedCipher.derive(password: replacement, salt: newSalt))
+        changed.biometric193 = false
+        try writeHeader(changed)
+        envelope = changed
+        try? removeBiometricKey193()
     }
     func enableOrdinary(password: String) throws { gate.lock(); defer { gate.unlock() };
         guard let master = master, let salt = envelope.salt, let wrapped = envelope.wrappedKey else { throw StorageError.locked }
@@ -230,7 +246,8 @@ final class SecureStorage {
             let checked = try biometricValue193(context: context)
             guard checked.binding == binding, checked.key == key else { throw StorageError.authentication }
             gate.lock(); defer { gate.unlock() }
-            guard epoch == sessionEpoch193, master == key, envelope.privateMode else { throw StorageError.locked }
+            guard epoch == sessionEpoch193, master == key, envelope.privateMode,
+                  envelope.wrappedKey == wrapped else { throw StorageError.locked }
             var next = envelope; next.biometric193 = true; try writeHeader(next); envelope = next
         } catch { try? removeBiometricKey193(); throw error }
     }

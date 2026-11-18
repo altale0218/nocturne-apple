@@ -1,38 +1,75 @@
 import UIKit
 
-final class SettingsController: UITableViewController, UIAdaptivePresentationControllerDelegate {
+final class SettingsController: UITableViewController, UIAdaptivePresentationControllerDelegate, UISearchResultsUpdating {
     let storage: SecureStorage
     var changed: (() -> Void)?, modeChanged: (() -> Void)?
     private var sections: [[String]] = []
     private var titles: [String] = []
     private var pendingGalleryRefresh = false
+    private var query = ""
+    private var changingPassword = false
+    private var selectedSetting: IndexPath?
     init(storage: SecureStorage) { self.storage = storage; if #available(iOS 13, *) { super.init(style: .insetGrouped) } else { super.init(style: .grouped) } }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func viewDidLoad() {
         super.viewDidLoad(); title = Strings.settings
         navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .done, target: self, action: #selector(done))
-        tableView.rowHeight = 56; tableView.estimatedRowHeight = 56
+        tableView.rowHeight = UITableView.automaticDimension; tableView.estimatedRowHeight = 56
+        let search = UISearchController(searchResultsController: nil)
+        search.searchResultsUpdater = self
+        search.obscuresBackgroundDuringPresentation = false
+        search.searchBar.placeholder = Strings.text("搜索设置", "Search settings", "設定を検索", "搜尋設定")
+        navigationItem.searchController = search
+        navigationItem.hidesSearchBarWhenScrolling = false
+        definesPresentationContext = true
         refreshTitles()
         refreshSections()
+        applyAppearance()
     }
     private func refreshSections() {
         let p = storage.state.settings
-        sections = [["appearance", "chrome", "motion"], ["source", "size", "square", "names", "views", "duration", "preview"], ["back", "forward", "blur", "viewerAll", "date", "fine", "hold", "openMark"], ["mode", "boundary", "release"]]
+        sections = [["appearance", "chrome", "language", "motion"],
+                    ["size", "square", "names", "views", "duration"],
+                    ["filmstrip", "swipeDismiss", "blur", "viewerAll", "date", "fine"],
+                    ["videoDoubleTap", "viewerMuted", "hold", "openMark"],
+                    ["preview"], ["mode", "boundary", "privacy"], ["release"]]
         if p.squareTiles { sections[1].insert("squareCorners", at: 2) }
-        if storage.envelope.privateMode { sections[3].insert("biometric", at: 1) }
-        if p.previewVideos { sections[1].append("limit"); sections[1].append("markLoop"); if p.markerPreview122 == true { sections[1].append("markWindow") } }
+        if storage.envelope.privateMode { sections[5].insert(contentsOf: ["password", "biometric"], at: 1) }
+        if p.previewVideos { sections[4].append("limit"); sections[4].append("markLoop"); if p.markerPreview122 == true { sections[4].append("markWindow") } }
         if p.mode == .galaxy && !p.reducedMotion { sections[1].append("speed") }
-        if (p.openAtMarker122 ?? true) || p.markerPreview122 == true { sections[2].append("lead") }
+        if p.videoDoubleTap204 ?? true { sections[3].insert(contentsOf: ["back", "forward"], at: 1) }
+        if (p.openAtMarker122 ?? true) || p.markerPreview122 == true { sections[3].append("lead") }
+        if !query.isEmpty {
+            for section in sections.indices {
+                if !titles[section].localizedCaseInsensitiveContains(query) {
+                    sections[section] = sections[section].filter { label($0).localizedCaseInsensitiveContains(query) }
+                }
+            }
+        }
+    }
+    func updateSearchResults(for searchController: UISearchController) {
+        query = (searchController.searchBar.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        refreshSections()
+        tableView.reloadData()
     }
     private func refreshTitles() {
-        titles = [Strings.text("外观与语言", "Appearance and language", "外観と言語", "外觀與語言"), Strings.text("图库与性能", "Gallery and performance", "ギャラリーと性能", "圖庫與效能"), Strings.text("播放与查看器", "Playback and viewer", "再生とビューアー", "播放與檢視器"), "Private"]
+        titles = [Strings.text("外观", "Appearance", "外観", "外觀"), Strings.text("主页", "Gallery", "ギャラリー", "主頁"),
+                  Strings.text("查看器", "Viewer", "ビューアー", "檢視器"), Strings.text("播放", "Playback", "再生", "播放"),
+                  Strings.text("性能", "Performance", "性能", "效能"), "Private · " + Strings.text("隐私", "Privacy", "プライバシー", "隱私"),
+                  Strings.text("软件更新", "Software updates", "ソフトウェア更新", "軟體更新")]
 
     }
     override func numberOfSections(in tableView: UITableView) -> Int { sections.count }
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { sections[section].count }
-    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? { titles[section] }
+    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? { sections[section].isEmpty ? nil : titles[section] }
     private func label(_ id: String) -> String {
         switch id {
+        case "filmstrip": return Strings.text("显示底部预览条", "Show the filmstrip", "プレビュー列を表示", "顯示底部預覽條")
+        case "swipeDismiss": return Strings.text("下滑退出查看器", "Swipe down to close viewer", "下にスワイプして閉じる", "下滑退出檢視器")
+        case "viewerMuted": return Strings.text("查看器默认静音", "Mute viewer by default", "既定でミュート", "檢視器預設靜音")
+        case "videoDoubleTap": return Strings.text("双击视频左右快退／快进", "Double-tap video to skip", "動画をダブルタップして移動", "雙擊影片左右快退／快進")
+        case "privacy": return Strings.text("隐私政策", "Privacy policy", "プライバシーポリシー", "隱私權政策")
+        case "password": return Strings.text("更改密码", "Change password", "パスワードを変更", "更改密碼")
         case "size": return Strings.text("片源大小", "Media size", "表示サイズ", "片源大小")
         case "viewerAll": return Strings.text("模糊延伸至查看器控制区", "Blur behind viewer controls", "操作エリアまでぼかす", "模糊延伸至檢視器控制區")
         case "date": return Strings.text("显示拍摄日期", "Show captured date", "撮影日を表示", "顯示拍攝日期")
@@ -43,7 +80,6 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         case "markLoop": return Strings.text("从标点循环预览", "Preview around marker", "マークから繰り返す", "從標點循環預覽")
         case "markWindow": return Strings.text("标点预览循环时长", "Marker preview loop duration", "マークプレビューの長さ", "標點預覽循環時長")
         case "appearance": return Strings.text("深浅色", "Appearance", "外観", "深淺色")
-        case "source": return "显示项目来源"
         case "square": return "1:1方形缩略图"
         case "squareCorners": return "1:1卡片保留圆角"
         case "biometric": return "生物识别解锁"
@@ -71,7 +107,7 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         let id = sections[indexPath.section][indexPath.row], p = storage.state.settings
         cell.detailTextLabel?.text = nil
         cell.textLabel?.text = label(id); cell.textLabel?.font = .systemFont(ofSize: 14); cell.textLabel?.numberOfLines = 2
-        let switches = ["square": p.squareTiles, "squareCorners": p.roundedSquare, "motion": p.reducedMotion, "names": p.groupDates199 ?? true, "views": p.showViews, "duration": p.showDuration, "sync": p.automaticSync, "preview": p.previewVideos, "viewerAll": p.viewerBackgroundAll122 ?? false, "date": p.showDate122 ?? true, "hold": p.holdSpeed122 ?? true, "openMark": p.openAtMarker122 ?? true, "markLoop": p.markerPreview122 ?? false]
+        let switches = ["square": p.squareTiles, "squareCorners": p.roundedSquare, "motion": p.reducedMotion, "names": p.groupDates199 ?? true, "views": p.showViews, "duration": p.showDuration, "preview": p.previewVideos, "date": p.showDate122 ?? true, "hold": p.holdSpeed122 ?? true, "openMark": p.openAtMarker122 ?? true, "markLoop": p.markerPreview122 ?? false, "filmstrip": p.showFilmstrip204 ?? true, "swipeDismiss": p.swipeDismiss199 ?? true, "viewerMuted": p.viewerMuted204 ?? false, "videoDoubleTap": p.videoDoubleTap204 ?? true, "viewerAll": p.viewerBackgroundAll122 ?? true]
         if let value = switches[id] {
             let toggle = (cell.accessoryView as? UISwitch) ?? UISwitch()
             toggle.removeTarget(self, action: #selector(toggled(_:)), for: .valueChanged)
@@ -91,7 +127,8 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         if id == "lead" { cell.detailTextLabel?.text = "\(Int(p.markerLead)) s" }
         if id == "markWindow" { cell.detailTextLabel?.text = "\(Int(p.markerWindow)) s" }
         if id == "fine" { cell.detailTextLabel?.text = "\(p.finePixels) pt" }
-        if id == "language" { cell.detailTextLabel?.text = p.language }
+        if id == "language" { cell.detailTextLabel?.text = Strings.language }
+        if id == "biometric" { cell.detailTextLabel?.text = storage.envelope.biometric193 == true ? "已启用" : "未启用" }
         if id == "appearance" { cell.detailTextLabel?.text = p.appearance.rawValue }
         if id == "limit" { cell.detailTextLabel?.text = String(p.maximumPreviews) }
         if id == "back" { cell.detailTextLabel?.text = "\(Int(p.skipBackward)) s" }
@@ -101,6 +138,15 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
     }
     @objc private func toggled(_ sender: UISwitch) {
         storage.update { state in
+            switch sender.accessibilityIdentifier {
+            case "filmstrip": state.settings.showFilmstrip204 = sender.isOn
+            case "swipeDismiss": state.settings.swipeDismiss199 = sender.isOn
+            case "viewerMuted": state.settings.viewerMuted204 = sender.isOn
+            case "videoDoubleTap": state.settings.videoDoubleTap204 = sender.isOn
+            case "names":
+                if sender.isOn && (state.settings.sortGallery199 ?? 0) >= 2 { state.settings.sortGallery199 = 0 }
+            default: break
+            }
             switch sender.accessibilityIdentifier { case "square": state.settings.squareTiles193 = sender.isOn; case "squareCorners": state.settings.roundedSquare193 = sender.isOn; case "motion": state.settings.reducedMotion = sender.isOn; case "names": state.settings.groupDates199 = sender.isOn; case "views": state.settings.showViews = sender.isOn; case "duration": state.settings.showDuration = sender.isOn; case "sync": state.settings.automaticSync = sender.isOn; case "preview": state.settings.previewVideos = sender.isOn; case "viewerAll": state.settings.viewerBackgroundAll122 = sender.isOn; case "date": state.settings.showDate122 = sender.isOn; case "hold": state.settings.holdSpeed122 = sender.isOn; case "openMark": state.settings.openAtMarker122 = sender.isOn; case "markLoop": state.settings.markerPreview122 = sender.isOn; default: break }
         }
         try? storage.save()
@@ -127,10 +173,12 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         }
     }
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        selectedSetting = indexPath
         tableView.deselectRow(at: indexPath, animated: true)
         let id = sections[indexPath.section][indexPath.row]
         switch id {
-        case "source": choices(id, names: ["全部项目", "本机图库项目", "应用内加密项目"], values: ["all", "local", "encrypted"]) { $0.settings.sourceScope193 = $1 }
+        case "privacy": showPrivacyChoices()
+        case "password": showPasswordChange()
         case "size":
             let values = GalleryRules122.gallerySizes.map { String($0) }
             choices(id, names: GalleryRules122.gallerySizeTitles, values: values) { $0.settings.gallerySize122 = Int($1) }
@@ -138,7 +186,7 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         case "markWindow": number(id, current: storage.state.settings.markerWindow, range: 1...120) { $0.settings.markerWindow122 = $1 }
         case "fine": number(id, current: storage.state.settings.finePixels, range: 1...6) { $0.settings.finePixels122 = $1 }
         case "biometric": configureBiometric193()
-        case "language": choices(id, names: ["简体中文", "English", "繁體中文", "日本語"], values: ["zh-Hans", "en", "zh-Hant", "ja"]) { state, value in state.settings.language = value; Strings.language = value; UserDefaults.standard.set(value, forKey: "language") }
+        case "language": choices(id, names: ["简体中文", "English", "繁體中文", "日本語"], values: ["zh-Hans", "en", "zh-Hant", "ja"]) { state, value in state.settings.language = value; Strings.language = value }
         case "appearance": choices(id, names: [Strings.text("跟随系统", "System", "システム", "跟隨系統"), Strings.text("浅色", "Light", "ライト", "淺色"), Strings.text("深色", "Dark", "ダーク", "深色")], values: ["system", "light", "dark"]) { $0.settings.appearance = Appearance(rawValue: $1)! }
         case "chrome": choices(id, names: [Strings.text("主题色", "Theme", "テーマ", "主題色"), Strings.text("图库融合", "Gallery blend", "写真と調和", "圖庫融合"), Strings.text("流光渐变", "Flowing gradient", "流れるグラデーション", "流光漸層")], values: ["theme", "gallery", "flowing"]) { $0.settings.chrome = ChromeSource(rawValue: $1)! }
         case "limit": number(id, current: Double(storage.state.settings.maximumPreviews), range: 1...16) { $0.settings.maximumPreviews = Int($1) }
@@ -154,8 +202,26 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
     }
     private func choices(_ id: String, names: [String], values: [String], apply: @escaping (inout LibraryState, String) -> Void) {
         let alert = UIAlertController(title: label(id), message: nil, preferredStyle: .actionSheet)
-        for (n, name) in names.enumerated() { alert.addAction(UIAlertAction(title: name, style: .default) { _ in self.storage.update { apply(&$0, values[n]) }; try? self.storage.save(); self.title = Strings.settings; self.refreshTitles(); self.refreshSections(); self.tableView.reloadData(); self.applyGallerySettings() }) }
-        alert.addAction(UIAlertAction(title: Strings.cancel, style: .cancel)); alert.popoverPresentationController?.sourceView = tableView; alert.popoverPresentationController?.sourceRect = tableView.rectForRow(at: tableView.indexPathForSelectedRow ?? IndexPath(row: 0, section: 0)); present(alert, animated: true)
+        for (n, name) in names.enumerated() {
+            alert.addAction(UIAlertAction(title: name, style: .default) { _ in
+                self.storage.update { apply(&$0, values[n]) }
+                try? self.storage.save()
+                self.title = Strings.settings
+                self.applyAppearance()
+                self.refreshTitles()
+                self.refreshSections()
+                self.tableView.reloadData()
+                self.applyGallerySettings()
+            })
+        }
+        alert.addAction(UIAlertAction(title: Strings.cancel, style: .cancel))
+        alert.popoverPresentationController?.sourceView = tableView
+        if let selectedSetting = selectedSetting, let cell = tableView.cellForRow(at: selectedSetting) {
+            alert.popoverPresentationController?.sourceRect = cell.frame
+        } else {
+            alert.popoverPresentationController?.sourceRect = CGRect(x: tableView.bounds.midX, y: tableView.bounds.midY, width: 1, height: 1)
+        }
+        present(alert, animated: true)
     }
     private func number(_ id: String, current: Double, range: ClosedRange<Double>, apply: @escaping (inout LibraryState, Double) -> Void) {
         let alert = UIAlertController(title: label(id), message: "\(range.lowerBound)–\(range.upperBound)", preferredStyle: .alert)
@@ -182,13 +248,69 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
     }
     private func changeMode() {
         let change = modeChanged
+        navigationItem.searchController?.isActive = false
         dismiss(animated: true) { change?() }
+    }
+    private func showPrivacyChoices() {
+        let picker = UIAlertController(title: label("privacy"), message: nil, preferredStyle: .alert)
+        picker.addAction(UIAlertAction(title: "简明版", style: .default) { [weak self] _ in
+            self?.message("隐私政策 · 简明版", "照片权限用于浏览原件、生成缩略图和按你的指令同步。局域网权限用于搜索和连接已配对设备。Private 的生物识别由系统验证，缓存使用认证加密。")
+        })
+        picker.addAction(UIAlertAction(title: "完整版", style: .default) { [weak self] _ in
+            self?.message("隐私政策 · 完整版", "照片：访问你授权的图库，显示照片和视频、读取拍摄信息、准备预览。整库同步需要完整权限，可能通过 Apple 照片从 iCloud 取得原片。\n\n局域网：发现设备；核对配对码后保存设备凭证。只有启动同步并获对方同意后才传输媒体。\n\nPrivate：加密原件保存在应用内。进入 Private 不会自动移动或隐藏系统相册里的照片。生物识别由系统处理，应用不读取生物特征数据。切到后台会锁定 Private。\n\n系统界面：实时活动仅显示普通图库任务的进度、容量、速度，不显示照片或文件名。内置浏览器会连接你主动访问的网站。可在系统设置管理权限。")
+        })
+        picker.addAction(UIAlertAction(title: Strings.cancel, style: .cancel))
+        present(picker, animated: true)
+    }
+    private func showPasswordChange() {
+        guard !changingPassword, storage.envelope.privateMode else { return }
+        let form = UIAlertController(title: label("password"), message: "新密码至少 10 位。", preferredStyle: .alert)
+        for prompt in ["当前密码", "新密码", "确认新密码"] {
+            form.addTextField { field in
+                field.placeholder = prompt
+                field.isSecureTextEntry = true
+                if #available(iOS 12, *) { field.textContentType = prompt == "当前密码" ? .password : .newPassword }
+            }
+        }
+        form.addAction(UIAlertAction(title: Strings.cancel, style: .cancel))
+        form.addAction(UIAlertAction(title: "保存", style: .default) { [weak self, weak form] _ in
+            guard let self = self, let fields = form?.textFields, fields.count == 3 else { return }
+            let current = fields[0].text ?? "", replacement = fields[1].text ?? ""
+            guard !current.isEmpty, replacement.count >= 10, replacement == fields[2].text else {
+                self.message(self.label("password"), "请填写当前密码，并确认两次输入的新密码一致。")
+                return
+            }
+            self.changingPassword = true
+            DispatchQueue.global(qos: .userInitiated).async {
+                let result = Result { try self.storage.changePrivatePassword(current: current, replacement: replacement) }
+                DispatchQueue.main.async {
+                    self.changingPassword = false
+                    guard self.viewIfLoaded?.window != nil else { return }
+                    switch result {
+                    case .success:
+                        self.tableView.reloadData()
+                        self.message(self.label("password"), "密码已更新。如需使用 Face ID 或 Touch ID，请重新启用生物识别解锁。")
+                    case .failure(StorageError.invalidCredentials): self.message(self.label("password"), "当前密码不正确。")
+                    case .failure: self.message(self.label("password"), "未能保存新密码。请检查存储空间后重试。")
+                    }
+                }
+            }
+        })
+        present(form, animated: true)
     }
     private func message(_ label: String, _ body: String) { let alert = UIAlertController(title: label, message: body, preferredStyle: .alert); alert.addAction(UIAlertAction(title: "OK", style: .default)); present(alert, animated: true) }
     private func message(label: String, body: String) { message(label, body) }
     private func applyGallerySettings() {
         pendingGalleryRefresh = false
         changed?()
+    }
+    private func applyAppearance() {
+        if #available(iOS 13, *) {
+            let appearance = storage.state.settings.appearance
+            let style: UIUserInterfaceStyle = appearance == .system ? .unspecified : appearance == .dark ? .dark : .light
+            navigationController?.overrideUserInterfaceStyle = style
+            overrideUserInterfaceStyle = style
+        }
     }
     private func refreshGalleryIfNeeded() {
         if pendingGalleryRefresh { applyGallerySettings() }
