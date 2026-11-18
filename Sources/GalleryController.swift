@@ -17,6 +17,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
     private var filter = "all"
     private let sortingTitles = ["拍摄时间 · 新到旧", "拍摄时间 · 旧到新", "最多观看", "名称 A–Z", "最新导入"]
     private var sidebar193: UIView?
+    private var draggingDrawer = false
     private var sidebarRows193: [(String, String, () -> Void)] = []
     private var pinchPreset193 = 1
     private var pinchAnchor193: IndexPath?
@@ -95,7 +96,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         if let overlay = sidebar193 {
             overlay.frame = view.bounds
             overlay.subviews.first?.frame = CGRect(x: 0, y: 0, width: drawerWidth193, height: view.bounds.height)
-            if overlay.isUserInteractionEnabled { foreground.transform = CGAffineTransform(translationX: drawerWidth193, y: 0) }
+            if overlay.isUserInteractionEnabled && !draggingDrawer { foreground.transform = CGAffineTransform(translationX: drawerWidth193, y: 0) }
         }
     }
     private var drawerWidth193: CGFloat { min(360, view.bounds.width * 0.74) }
@@ -358,7 +359,14 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
             UIAction(title: title, image: UIImage(systemName: icon), state: selected ? .on : .off) { [weak self] _ in
                 guard let self = self else { return }
                 self.storage.update { change(&$0.settings) }
-                self.applyTheme(); self.reload(); try? self.storage.save()
+                let changedSize = p.sizePreset != self.storage.state.settings.sizePreset
+                if changedSize && !UIAccessibility.isReduceMotionEnabled && !p.reducedMotion {
+                    UIView.transition(with: self.collection, duration: 0.22,
+                                      options: [.transitionCrossDissolve, .allowUserInteraction, .beginFromCurrentState]) {
+                        self.applyTheme(); self.reload()
+                    }
+                } else { self.applyTheme(); self.reload() }
+                try? self.storage.save()
             }
         }
         let modes = UIMenu(title: "布局", options: .displayInline, children: [
@@ -396,7 +404,14 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
             alert.addAction(UIAlertAction(title: (selected ? "✓  " : "") + title, style: .default) { [weak self] _ in
                 guard let self = self else { return }
                 self.storage.update { change(&$0.settings) }
-                self.applyTheme(); self.reload(); try? self.storage.save()
+                let changedSize = p.sizePreset != self.storage.state.settings.sizePreset
+                if changedSize && !UIAccessibility.isReduceMotionEnabled && !p.reducedMotion {
+                    UIView.transition(with: self.collection, duration: 0.22,
+                                      options: [.transitionCrossDissolve, .allowUserInteraction, .beginFromCurrentState]) {
+                        self.applyTheme(); self.reload()
+                    }
+                } else { self.applyTheme(); self.reload() }
+                try? self.storage.save()
             })
         }
         add("平铺", p.mode == .tiles) { $0.mode = .tiles }
@@ -458,7 +473,26 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
     @objc private func openSidebarSwipe199() { if sidebar193 == nil && !selecting193 { navigate() } }
 
     @objc private func revealSidebar193(_ edge: UIScreenEdgePanGestureRecognizer) {
-        if edge.state == .ended, edge.translation(in: view).x > 34, sidebar193 == nil, !selecting193 { navigate() }
+        guard !selecting193 else { return }
+        switch edge.state {
+        case .began:
+            guard sidebar193 == nil else { return }
+            draggingDrawer = true
+            navigate()
+        case .changed:
+            guard draggingDrawer else { return }
+            let offset = min(drawerWidth193, max(0, edge.translation(in: view).x))
+            foreground.transform = CGAffineTransform(translationX: offset, y: 0)
+            drawerDismissControl?.alpha = offset / max(1, drawerWidth193)
+        case .ended, .cancelled, .failed:
+            guard draggingDrawer else { return }
+            draggingDrawer = false
+            let offset = edge.translation(in: view).x
+            if edge.state == .ended && (offset > drawerWidth193 * 0.38 || (offset > 30 && edge.velocity(in: view).x > 400)) {
+                animateDrawerOpen()
+            } else { dismissSidebar193() }
+        default: break
+        }
     }
 
     private func showPrivateDuplicates204() {
@@ -475,7 +509,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
                 let controller = PrivateDuplicateList204(groups: groups, gallery: self, lease: lease)
                 let navigation = UINavigationController(rootViewController: controller)
                 if #available(iOS 13, *) { navigation.overrideUserInterfaceStyle = self.dark ? .dark : .light }
-                self.present(navigation, animated: true)
+                navigation.modalPresentationStyle = .fullScreen; self.present(navigation, animated: true)
             }
         }
     }
@@ -528,12 +562,12 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
                         storage: self.storage, album: .all, lease: lease, scanOnOpen: true)
                     let navigation = UINavigationController(rootViewController: controller)
                     navigation.isModalInPresentation = true
-                    self.present(navigation, animated: true)
+                    navigation.modalPresentationStyle = .fullScreen; self.present(navigation, animated: true)
                 }
             }))
             sidebarRows193.append(("手机相册同步", "iphone.and.arrow.forward", { [weak self] in
                 guard let self = self else { return }
-                self.present(UINavigationController(rootViewController: AppleAlbumSyncController(storage: self.storage)), animated: true)
+                let navigation = UINavigationController(rootViewController: AppleAlbumSyncController(storage: self.storage)); navigation.modalPresentationStyle = .fullScreen; navigation.modalPresentationStyle = .fullScreen; self.present(navigation, animated: true)
             }))
             #endif
         }
@@ -617,11 +651,16 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         let closeFromGallery = UISwipeGestureRecognizer(target: self, action: #selector(dismissSidebar193))
         closeFromGallery.direction = .left; scrim.addGestureRecognizer(closeFromGallery)
         scrim.alpha = 0
-        UIView.animate(withDuration: sidebarDuration193, delay: 0, options: [.curveEaseOut, .beginFromCurrentState]) {
-            scrim.alpha = 1
+        if !draggingDrawer { animateDrawerOpen() }
+        UIAccessibility.post(notification: .screenChanged, argument: header)
+    }
+
+    private func animateDrawerOpen() {
+        UIView.animate(withDuration: sidebarDuration193, delay: 0, usingSpringWithDamping: 0.88,
+                       initialSpringVelocity: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+            self.drawerDismissControl?.alpha = 1
             self.foreground.transform = CGAffineTransform(translationX: self.drawerWidth193, y: 0)
         }
-        UIAccessibility.post(notification: .screenChanged, argument: header)
     }
 
     private var sidebarDuration193: TimeInterval {
@@ -657,7 +696,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         let settings = SettingsController(storage: storage)
         settings.changed = { [weak self] in self?.applyTheme(); self?.reload() }
         settings.modeChanged = storage.envelope.privateMode ? locked : openPrivate193
-        let navigation = UINavigationController(rootViewController: settings)
+        let navigation = UINavigationController(rootViewController: settings); navigation.modalPresentationStyle = .fullScreen
         present(navigation, animated: true)
         navigation.presentationController?.delegate = settings
     }
@@ -683,7 +722,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
     }
     @objc private func reorder(_ gesture: UILongPressGestureRecognizer) {
         if filter != "star" || selecting193 {
-            if gesture.state == .began, let path = collection.indexPathForItem(at: gesture.location(in: collection)), shown.indices.contains(path.item) { beginSelection193(); selected193.insert(shown[path.item].localIdentifier); collection.reloadData(); selectionHeader193() }
+            // Enter multi-select explicitly; a pinch may start with one finger.
             return
         }
         guard filter == "star", layout.mode == .tiles else { return }
@@ -728,7 +767,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         (collectionView.cellForItem(at: indexPath) as? MediaCell)?.selection193(active: true, selected: false); selectionHeader193()
     }
     @available(iOS 13, *)
-    func collectionView(_ collectionView: UICollectionView, shouldBeginMultipleSelectionInteractionAt indexPath: IndexPath) -> Bool { selecting193 && !deleting193 && filter != "star" }
+    func collectionView(_ collectionView: UICollectionView, shouldBeginMultipleSelectionInteractionAt indexPath: IndexPath) -> Bool { false }
     @available(iOS 13, *)
     func collectionView(_ collectionView: UICollectionView, didBeginMultipleSelectionInteractionAt indexPath: IndexPath) { beginSelection193() }
     private func selectionMenu193() {

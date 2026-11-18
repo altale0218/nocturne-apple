@@ -49,6 +49,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
     private var swipeDown199 = false
     private var closing199 = false
     private var immersive = false
+    private let immersionShade = UIView()
     private var stripCommit: DispatchWorkItem?
     private var stripPreview = false
     private var lastStripFling: CFTimeInterval = 0
@@ -74,6 +75,8 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         modalPresentationCapturesStatusBarAppearance = true
         backdrop.contentMode = .scaleAspectFill; backdrop.clipsToBounds = true; backdrop.alpha = 0.85
         view.addSubview(backdrop); blur.isHidden = true
+        immersionShade.backgroundColor = .black; immersionShade.alpha = 0; immersionShade.isUserInteractionEnabled = false
+        view.addSubview(immersionShade)
         zoom.contentInsetAdjustmentBehavior = .never; zoom.minimumZoomScale = 1; zoom.maximumZoomScale = 8; zoom.delegate = self; zoom.showsHorizontalScrollIndicator = false; zoom.showsVerticalScrollIndicator = false
         zoom.addSubview(media); image.contentMode = .scaleAspectFit; precision.contentMode = .scaleAspectFit; precision.isHidden = true
         media.addSubview(image); media.layer.addSublayer(playerLayer); playerLayer.videoGravity = .resizeAspect; media.addSubview(precision); live193.contentMode = .scaleAspectFit; live193.alpha = 0; live193.isUserInteractionEnabled = false; media.addSubview(live193)
@@ -124,7 +127,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         liveButton199 = live
         for button in [live, favorite!] {
             button.backgroundColor = UIColor(white: 0.15, alpha: 0.46)
-            button.layer.cornerRadius = 19
+            button.layer.cornerRadius = 24
             button.tintColor = .white
             chrome.addSubview(button)
         }
@@ -161,15 +164,16 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         let stageBottom = controls.isHidden ? view.bounds.height - safe.bottom : controls.frame.minY + (photo ? 0 : 20)
         stage.frame = CGRect(x: safe.left, y: safe.top, width: width, height: max(1, stageBottom - safe.top))
         if immersive { stage.frame = view.bounds }
+        immersionShade.frame = view.bounds
         backdrop.frame = (storage.state.settings.viewerBackgroundAll122 ?? true) ? view.bounds : stage.frame
         blur.frame = stage.bounds; blur.alpha = CGFloat(max(0, min(1, storage.state.settings.blurRadius / 48))); zoom.frame = stage.bounds
         if zoom.zoomScale == 1 { media.frame = CGRect(origin: .zero, size: zoom.bounds.size); zoom.contentSize = media.bounds.size }
-        image.frame = photo && !immersive ? fittedMediaRect(bottomAligned: true) : media.bounds
+        image.frame = media.bounds
         precision.frame = media.bounds; live193.frame = image.frame; playerLayer.frame = photo ? image.frame : media.bounds
-        chrome.frame = CGRect(x: 0, y: 0, width: width, height: 64)
+        chrome.frame = CGRect(x: safe.left, y: safe.top, width: width, height: 64)
         moreButton193?.frame = CGRect(x: width - 60, y: 8, width: 48, height: 48)
-        favorite.frame = CGRect(x: width - 112, y: 8, width: 48, height: 48)
-        liveButton199?.frame = CGRect(x: width - 164, y: 8, width: 48, height: 48)
+        favorite.frame = CGRect(x: width - 118, y: 8, width: 48, height: 48)
+        liveButton199?.frame = CGRect(x: width - 176, y: 8, width: 48, height: 48)
         facts.frame = CGRect(x: width * 0.44, y: photo ? -20 : 0, width: width * 0.56 - 12, height: 20)
         dateLabel.frame = CGRect(x: 12, y: photo ? -20 : 0, width: width * 0.44 - 20, height: 20)
         speedHint.frame = CGRect(x: max(safe.left + 12, view.bounds.midX - 130), y: max(safe.top + 70, controls.frame.minY - 42), width: min(260, width - 24), height: 32)
@@ -480,12 +484,21 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
     private func anchor(_ alert: UIAlertController) { alert.popoverPresentationController?.sourceView = actions; alert.popoverPresentationController?.sourceRect = actions.bounds }
     @objc private func toggleControls() {
         immersive.toggle()
-        controls.isHidden = immersive
-        chrome.isHidden = immersive
+        let hide = immersive
+        controls.isHidden = false; chrome.isHidden = false
+        controls.isUserInteractionEnabled = !hide; chrome.isUserInteractionEnabled = !hide
+        let duration: TimeInterval = UIAccessibility.isReduceMotionEnabled || storage.state.settings.reducedMotion ? 0 : 0.26
+        UIView.animate(withDuration: duration, delay: 0, options: [.curveEaseInOut, .beginFromCurrentState, .allowUserInteraction]) {
+            self.immersionShade.alpha = hide ? 0.88 : 0
+            self.controls.alpha = hide ? 0 : 1
+            self.chrome.alpha = hide ? 0 : 1
+            self.view.setNeedsLayout(); self.view.layoutIfNeeded()
+        } completion: { _ in
+            guard self.immersive == hide else { return }
+            self.controls.isHidden = hide; self.chrome.isHidden = hide
+        }
         setNeedsStatusBarAppearanceUpdate()
         setNeedsUpdateOfHomeIndicatorAutoHidden()
-        view.setNeedsLayout()
-        activate()
     }
     @objc private func activate() {
         fade?.cancel(); chrome.alpha = 1; facts.alpha = 1; dateLabel.alpha = 1
@@ -574,7 +587,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
     }
     private func mediaFrame199() -> CGRect {
         guard assets.indices.contains(selected) else { return .zero }
-        return media.convert(fittedMediaRect(bottomAligned: !immersive && assets[selected].mediaType == .image), to: view)
+        return media.convert(fittedMediaRect(bottomAligned: false), to: view)
     }
     private func ghost199(_ photo: UIImage, at frame: CGRect) -> UIImageView {
         let ghost = UIImageView(image: photo)

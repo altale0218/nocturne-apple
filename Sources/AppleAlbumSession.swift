@@ -409,7 +409,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
             stack.centerXAnchor.constraint(equalTo: scroll.contentLayoutGuide.centerXAnchor),
             stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 18),
             stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -18),
-            stack.widthAnchor.constraint(lessThanOrEqualToConstant: 620),
+            stack.widthAnchor.constraint(lessThanOrEqualToConstant: 620), stack.widthAnchor.constraint(lessThanOrEqualTo: scroll.frameLayoutGuide.widthAnchor, constant: -36),
             preferredWidth
         ])
         if let lease = try? storage.resourceLease193(),
@@ -603,7 +603,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         // This DNS-SD record only signals presence. No application socket listens at the discard port.
         let presence = NetService(domain: "local.", type: "_nocturne-ios._tcp.", name: "Nocturne Apple", port: 9)
         presenceService = presence
-        presence.publish()
+        presence.delegate = self; presence.publish()
     }
 
     @objc private func rescanDevices() {
@@ -620,6 +620,11 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         })
         dialog.addAction(UIAlertAction(title: "关闭", style: .cancel))
         present(dialog, animated: true)
+    }
+
+    func netService(_ sender: NetService, didNotPublish errorDict: [String: NSNumber]) {
+        guard sender === presenceService else { return }
+        discoveryStatus.text = "无法向 Android 广播本机。请检查 Nocturne 的「本地网络」权限，然后重新搜索。"
     }
 
     func netServiceBrowser(_ browser: NetServiceBrowser, didNotSearch errorDict: [String: NSNumber]) {
@@ -769,7 +774,8 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
             var settings = try session.settings()
             guard let stored = settings.peer, stored.trusted else { throw AppleSyncTransport.Failure.authentication }
             self.status.text = "正在连接 \(stored.name)…"
-            let remote = try await AppleSyncTransport.probe(address: ip, pin: stored.pin)
+            let remote = try await AppleSyncTransport.probe(address: ip)
+            guard remote.pin == stored.pin else { throw AppleSyncTransport.Failure.changedPeer }
             guard remote.id == stored.id else { throw AppleSyncTransport.Failure.changedPeer }
             let peer = try stored.connect(address: ip)
             try await AppleAlbumSession.verify(peer: peer, local: session.local(settings),
@@ -914,7 +920,11 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
     private func show(_ error: Error) {
         switch error {
         case AppleSyncTransport.Failure.address: status.text = "请输入同一局域网内 Android 的 IP 地址。"
-        case AppleSyncTransport.Failure.certificate, AppleSyncTransport.Failure.changedPeer:
+        case AppleSyncTransport.Failure.certificate:
+            verifiedAddress = nil
+            switchDevicePage()
+            status.text = "已找到设备，但无法验证其连接证书。请检查两端日期与时间是否自动同步，并确认 Android 使用最新版本。"
+        case AppleSyncTransport.Failure.changedPeer:
             verifiedAddress = nil
             switchDevicePage()
             status.text = "Android 身份验证未通过。请确认地址属于要连接的设备；若 Android 已更换安装或身份，请手动重新配对。"

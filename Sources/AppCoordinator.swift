@@ -85,7 +85,7 @@ final class AppCoordinator {
             }
         }
         if #available(iOS 13, *) { controller.isModalInPresentation = true }
-        presenter.present(controller, animated: true)
+        controller.modalPresentationStyle = .fullScreen; presenter.present(controller, animated: true)
         if storage.exportCleanupPending193 > 0 { controller.loadViewIfNeeded(); controller.status193("上次移出的受保护临时原件尚待清理，新的移出操作已暂停。") }
     }
     private func switchLibrary193(_ target: SecureStorage) {
