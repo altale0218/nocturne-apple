@@ -461,6 +461,34 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         if edge.state == .ended, edge.translation(in: view).x > 34, sidebar193 == nil, !selecting193 { navigate() }
     }
 
+    private func showPrivateDuplicates204() {
+        guard storage.envelope.privateMode, let lease = try? storage.resourceLease193() else { return }
+        let media = Array((storage.state.internalMedia193 ?? [:]).values)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let groups = Dictionary(grouping: media, by: \.rawIdentity193).values
+                .filter { $0.count > 1 }
+                .map { $0.sorted { ($0.imported, $0.id) < ($1.imported, $1.id) } }
+                .sorted { ($0[0].imported, $0[0].id) > ($1[0].imported, $1[0].id) }
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self, self.view.window != nil, self.presentedViewController == nil,
+                      (try? self.storage.validateResourceLease193(lease)) != nil else { return }
+                let controller = PrivateDuplicateList204(groups: groups, gallery: self, lease: lease)
+                let navigation = UINavigationController(rootViewController: controller)
+                if #available(iOS 13, *) { navigation.overrideUserInterfaceStyle = self.dark ? .dark : .light }
+                self.present(navigation, animated: true)
+            }
+        }
+    }
+
+    fileprivate func openPrivateDuplicate204(_ group: [EncryptedMedia193], selected: Int, lease: Int, from controller: UIViewController) {
+        guard (try? storage.validateResourceLease193(lease)) != nil,
+              group.indices.contains(selected) else { return }
+        let viewer = ViewerController(assets: group.map(MediaAsset193.init), selected: selected,
+                                      repository: repository, storage: storage, clock: clock, initialPreviewReady: false)
+        viewer.modalPresentationStyle = .overFullScreen
+        controller.present(viewer, animated: false)
+    }
+
     @objc private func navigate() {
         if selecting193 { selecting193 = false; selected193.removeAll(); reload(); return }
         if sidebar193 != nil { dismissSidebar193(); return }
@@ -472,6 +500,9 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         }
         sidebarRows193.append(("多选项目", "checkmark.circle", { [weak self] in self?.beginSelection193() }))
         if privateMode {
+            sidebarRows193.append(("查找 Private 重复项目", "square.on.square", { [weak self] in
+                self?.showPrivateDuplicates204()
+            }))
             #if !NOCTURNE_LEGACY
             sidebarRows193.append(("导入到 Private", "lock.shield", { [weak self] in
                 if #available(iOS 14, *) { self?.choosePrivateOriginal193() }
@@ -779,3 +810,54 @@ extension GalleryController: PHPickerViewControllerDelegate {
     }
 }
 #endif
+
+private final class PrivateDuplicateList204: UITableViewController {
+    private let groups: [[EncryptedMedia193]]
+    private weak var gallery: GalleryController?
+    private let lease: Int
+
+    init(groups: [[EncryptedMedia193]], gallery: GalleryController, lease: Int) {
+        self.groups = groups
+        self.gallery = gallery
+        self.lease = lease
+        super.init(style: .grouped)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:)") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "Private 重复项目"
+        navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .done, target: self, action: #selector(close))
+        if groups.isEmpty {
+            let label = UILabel()
+            label.text = "没有找到完全重复的项目"
+            label.font = .preferredFont(forTextStyle: .body)
+            label.adjustsFontForContentSizeCategory = true
+            label.textAlignment = .center
+            label.numberOfLines = 0
+            tableView.backgroundView = label
+        }
+    }
+
+    @objc private func close() { dismiss(animated: true) }
+
+    override func numberOfSections(in tableView: UITableView) -> Int { groups.count }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { groups[section].count }
+    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        "完全重复 · \(groups[section].count) 项"
+    }
+    override func tableView(_ tableView: UITableView, cellForRowAt path: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "privateDuplicate") ??
+            UITableViewCell(style: .subtitle, reuseIdentifier: "privateDuplicate")
+        let media = groups[path.section][path.row]
+        cell.textLabel?.text = (media.cover ?? media.video)?.filename ?? "Private 项目"
+        cell.detailTextLabel?.text = DateFormatter.localizedString(from: media.imported, dateStyle: .medium, timeStyle: .short)
+        cell.accessoryType = .disclosureIndicator
+        return cell
+    }
+    override func tableView(_ tableView: UITableView, didSelectRowAt path: IndexPath) {
+        tableView.deselectRow(at: path, animated: true)
+        gallery?.openPrivateDuplicate204(groups[path.section], selected: path.row, lease: lease, from: self)
+    }
+}
