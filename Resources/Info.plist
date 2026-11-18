@@ -63,6 +63,8 @@
 	</array>
 	<key>NSFaceIDUsageDescription</key>
 	<string>仅用于在你启用后验证身份并解锁Nocturne Private；密码入口始终保留。</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>仅在你使用设备同步时发现局域网设备，经配对及加密连接同步选中的影像。</string>
 	<key>NSBonjourServices</key>

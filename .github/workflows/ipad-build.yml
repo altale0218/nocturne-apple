@@ -32,7 +32,7 @@
   },
   "jobs": {
     "build": {
-      "runs-on": "${{ inputs.runner || (startsWith(github.ref_name, 'nocturne-apple-ci-device-mac26intel-') && 'macos-26-intel') || (startsWith(github.ref_name, 'nocturne-apple-ci-device-mac26-') && 'macos-26') || ((startsWith(github.ref_name, 'nocturne-apple-ci-intel-') || startsWith(github.ref_name, 'nocturne-apple-ci-device-intel-')) && 'macos-15-intel') || 'macos-15' }}",
+      "runs-on": "${{ inputs.runner || (contains(github.ref_name, '-mac26intel-') && 'macos-26-intel') || (startsWith(github.ref_name, 'nocturne-apple-ci-device-mac26-') && 'macos-26') || ((startsWith(github.ref_name, 'nocturne-apple-ci-intel-') || startsWith(github.ref_name, 'nocturne-apple-ci-device-intel-')) && 'macos-15-intel') || 'macos-15' }}",
       "timeout-minutes": 35,
       "steps": [
         {

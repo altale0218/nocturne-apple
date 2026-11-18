@@ -19,8 +19,10 @@ enum AppleSyncTransport {
         let name: String
         let pin: String
         let supportsOrdinaryLibrary: Bool
+        let supportsAlbumConnection: Bool
 
-        init(id: String, name: String, pin: String, supportsOrdinaryLibrary: Bool = false) throws {
+        init(id: String, name: String, pin: String, supportsOrdinaryLibrary: Bool = false,
+             supportsAlbumConnection: Bool = false) throws {
             guard AppleSyncTransport.isHex(id, length: 32), AppleSyncTransport.isHex(pin, length: 64),
                   !name.isEmpty, name.utf16.count <= 80,
                   name.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) })
@@ -29,6 +31,7 @@ enum AppleSyncTransport {
             self.name = name
             self.pin = pin
             self.supportsOrdinaryLibrary = supportsOrdinaryLibrary
+            self.supportsAlbumConnection = supportsAlbumConnection
         }
     }
 
@@ -153,7 +156,8 @@ enum AppleSyncTransport {
     private static func identity(_ value: [String: Any]) throws -> Identity {
         guard let id = value["id"] as? String, let name = value["name"] as? String,
               let pin = value["pin"] as? String else { throw Failure.malformed }
-        return try Identity(id: id, name: name, pin: pin, supportsOrdinaryLibrary: value["mobileAlbumAll1"] as? Bool == true)
+        return try Identity(id: id, name: name, pin: pin, supportsOrdinaryLibrary: value["mobileAlbumAll1"] as? Bool == true,
+                            supportsAlbumConnection: value["mobileAlbumConnect1"] as? Bool == true)
     }
 
     static func isHex(_ value: String, length: Int) -> Bool {

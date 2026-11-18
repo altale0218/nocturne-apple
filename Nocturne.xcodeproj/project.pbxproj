@@ -5,6 +5,37 @@
   };
   "objectVersion" = 56;
   "objects" = {
+    "A20260000000000000000001" = { "isa" = "PBXFileReference"; "lastKnownFileType" = "sourcecode.swift"; "path" = "Sources/TaskActivity.swift"; "sourceTree" = "SOURCE_ROOT"; };
+    "A20260000000000000000002" = { "isa" = "PBXFileReference"; "lastKnownFileType" = "sourcecode.swift"; "path" = "Sources/TaskActivityWidget.swift"; "sourceTree" = "SOURCE_ROOT"; };
+    "A20260000000000000000003" = { "isa" = "PBXFileReference"; "lastKnownFileType" = "sourcecode.swift"; "path" = "Sources/TaskActivityController.swift"; "sourceTree" = "SOURCE_ROOT"; };
+    "A20260000000000000000004" = { "isa" = "PBXBuildFile"; "fileRef" = "A20260000000000000000001"; };
+    "A20260000000000000000005" = { "isa" = "PBXBuildFile"; "fileRef" = "A20260000000000000000003"; };
+    "A20260000000000000000006" = { "isa" = "PBXBuildFile"; "fileRef" = "A20260000000000000000001"; };
+    "A20260000000000000000007" = { "isa" = "PBXBuildFile"; "fileRef" = "A20260000000000000000002"; };
+    "A20260000000000000000008" = { "isa" = "PBXFileReference"; "explicitFileType" = "wrapper.app-extension"; "path" = "NocturneTaskActivity.appex"; "sourceTree" = "BUILT_PRODUCTS_DIR"; };
+    "A20260000000000000000009" = { "isa" = "PBXBuildFile"; "fileRef" = "A20260000000000000000008"; "settings" = { "ATTRIBUTES" = ("RemoveHeadersOnCopy",); }; };
+    "A2026000000000000000000a" = { "isa" = "PBXCopyFilesBuildPhase"; "buildActionMask" = 2147483647; "dstPath" = ""; "dstSubfolderSpec" = 13; "files" = ("A20260000000000000000009",); "name" = "Embed App Extensions"; "runOnlyForDeploymentPostprocessing" = 0; };
+    "A2026000000000000000000b" = { "isa" = "PBXSourcesBuildPhase"; "buildActionMask" = 2147483647; "files" = ("A20260000000000000000006", "A20260000000000000000007",); "runOnlyForDeploymentPostprocessing" = 0; };
+    "A2026000000000000000000c" = { "isa" = "PBXNativeTarget"; "buildConfigurationList" = "A2026000000000000000000d"; "buildPhases" = ("A2026000000000000000000b",); "buildRules" = (); "dependencies" = (); "name" = "NocturneTaskActivity"; "productName" = "NocturneTaskActivity"; "productReference" = "A20260000000000000000008"; "productType" = "com.apple.product-type.app-extension"; };
+    "A2026000000000000000000d" = { "isa" = "XCConfigurationList"; "buildConfigurations" = ("A2026000000000000000000e", "A2026000000000000000000f",); "defaultConfigurationIsVisible" = 0; "defaultConfigurationName" = "Release"; };
+    "A2026000000000000000000e" = { "isa" = "XCBuildConfiguration"; "name" = "Debug"; "buildSettings" = {
+        "APPLICATION_EXTENSION_API_ONLY" = "YES"; "CURRENT_PROJECT_VERSION" = "203";
+        "GENERATE_INFOPLIST_FILE" = "YES"; "INFOPLIST_FILE" = "Resources/TaskActivity-Info.plist";
+        "IPHONEOS_DEPLOYMENT_TARGET" = "16.2"; "MARKETING_VERSION" = "1.5.21";
+        "PRODUCT_BUNDLE_IDENTIFIER" = "com.nocturne.gallery.TaskActivity"; "PRODUCT_NAME" = "NocturneTaskActivity";
+        "SDKROOT" = "iphoneos"; "SKIP_INSTALL" = "YES"; "SWIFT_VERSION" = "5.0";
+        "TARGETED_DEVICE_FAMILY" = "1,2";
+      }; };
+    "A2026000000000000000000f" = { "isa" = "XCBuildConfiguration"; "name" = "Release"; "buildSettings" = {
+        "APPLICATION_EXTENSION_API_ONLY" = "YES"; "CURRENT_PROJECT_VERSION" = "203";
+        "GENERATE_INFOPLIST_FILE" = "YES"; "INFOPLIST_FILE" = "Resources/TaskActivity-Info.plist";
+        "IPHONEOS_DEPLOYMENT_TARGET" = "16.2"; "MARKETING_VERSION" = "1.5.21";
+        "PRODUCT_BUNDLE_IDENTIFIER" = "com.nocturne.gallery.TaskActivity"; "PRODUCT_NAME" = "NocturneTaskActivity";
+        "SDKROOT" = "iphoneos"; "SKIP_INSTALL" = "YES"; "SWIFT_VERSION" = "5.0";
+        "TARGETED_DEVICE_FAMILY" = "1,2";
+      }; };
+    "A20260000000000000000010" = { "isa" = "PBXTargetDependency"; "target" = "A2026000000000000000000c"; "targetProxy" = "A20260000000000000000011"; };
+    "A20260000000000000000011" = { "isa" = "PBXContainerItemProxy"; "containerPortal" = "98F54143AB4E86B28C3AFEE0"; "proxyType" = 1; "remoteGlobalIDString" = "A2026000000000000000000c"; "remoteInfo" = "NocturneTaskActivity"; };
     "D4EC1260339D09C920A72F49" = {
       "isa" = "PBXFileReference";
       "lastKnownFileType" = "sourcecode.swift";
@@ -287,6 +318,8 @@
       "isa" = "PBXSourcesBuildPhase";
       "buildActionMask" = 2147483647;
       "files" = (
+        "A20260000000000000000004",
+        "A20260000000000000000005",
         "555CD1D2277EF698D818F137",
         "5B4B03684824A89737998992",
         "AFC5BF690A0AFACE575C4121",
@@ -374,8 +407,8 @@
         "CODE_SIGN_IDENTITY[sdk=iphonesimulator*]" = "-";
         "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "ci/SimulatorKeychain.plist";
         "ENABLE_BITCODE" = "NO";
-        "CURRENT_PROJECT_VERSION" = "202";
-        "MARKETING_VERSION" = "1.5.20";
+        "CURRENT_PROJECT_VERSION" = "203";
+        "MARKETING_VERSION" = "1.5.21";
         "IPHONEOS_DEPLOYMENT_TARGET" = "15.0";
         "ASSETCATALOG_COMPILER_APPICON_NAME" = "AppIcon";
         "SWIFT_EMIT_LOC_STRINGS" = "YES";
@@ -400,8 +433,8 @@
         "CODE_SIGNING_ALLOWED" = "NO";
         "CODE_SIGN_STYLE" = "Automatic";
         "ENABLE_BITCODE" = "NO";
-        "CURRENT_PROJECT_VERSION" = "202";
-        "MARKETING_VERSION" = "1.5.20";
+        "CURRENT_PROJECT_VERSION" = "203";
+        "MARKETING_VERSION" = "1.5.21";
         "IPHONEOS_DEPLOYMENT_TARGET" = "15.0";
         "ASSETCATALOG_COMPILER_APPICON_NAME" = "AppIcon";
         "SWIFT_EMIT_LOC_STRINGS" = "YES";
@@ -432,10 +465,12 @@
         "29E6EAAFC02D6B4822AC0ABE",
         "DFA366374981DD8D19D2FCE0",
         "E6A0C2B98C12250595E4593F",
+        "A2026000000000000000000a",
       );
       "buildRules" = (
       );
       "dependencies" = (
+        "A20260000000000000000010",
       );
       "name" = "Nocturne";
       "productName" = "Nocturne";
@@ -573,8 +608,8 @@
         "CODE_SIGNING_ALLOWED" = "NO";
         "CODE_SIGN_STYLE" = "Automatic";
         "ENABLE_BITCODE" = "NO";
-        "CURRENT_PROJECT_VERSION" = "202";
-        "MARKETING_VERSION" = "1.5.20";
+        "CURRENT_PROJECT_VERSION" = "203";
+        "MARKETING_VERSION" = "1.5.21";
         "IPHONEOS_DEPLOYMENT_TARGET" = "12.0";
         "ASSETCATALOG_COMPILER_APPICON_NAME" = "AppIcon";
         "SWIFT_EMIT_LOC_STRINGS" = "YES";
@@ -599,8 +634,8 @@
         "CODE_SIGNING_ALLOWED" = "NO";
         "CODE_SIGN_STYLE" = "Automatic";
         "ENABLE_BITCODE" = "NO";
-        "CURRENT_PROJECT_VERSION" = "202";
-        "MARKETING_VERSION" = "1.5.20";
+        "CURRENT_PROJECT_VERSION" = "203";
+        "MARKETING_VERSION" = "1.5.21";
         "IPHONEOS_DEPLOYMENT_TARGET" = "12.0";
         "ASSETCATALOG_COMPILER_APPICON_NAME" = "AppIcon";
         "SWIFT_EMIT_LOC_STRINGS" = "YES";
@@ -684,8 +719,8 @@
         "CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]" = "YES";
         "CODE_SIGN_IDENTITY[sdk=iphonesimulator*]" = "-";
         "ENABLE_BITCODE" = "NO";
-        "CURRENT_PROJECT_VERSION" = "202";
-        "MARKETING_VERSION" = "1.5.20";
+        "CURRENT_PROJECT_VERSION" = "203";
+        "MARKETING_VERSION" = "1.5.21";
         "IPHONEOS_DEPLOYMENT_TARGET" = "15.0";
         "SWIFT_EMIT_LOC_STRINGS" = "YES";
         "ENABLE_TESTABILITY" = "YES";
@@ -710,8 +745,8 @@
         "CODE_SIGNING_ALLOWED" = "NO";
         "CODE_SIGN_STYLE" = "Automatic";
         "ENABLE_BITCODE" = "NO";
-        "CURRENT_PROJECT_VERSION" = "202";
-        "MARKETING_VERSION" = "1.5.20";
+        "CURRENT_PROJECT_VERSION" = "203";
+        "MARKETING_VERSION" = "1.5.21";
         "IPHONEOS_DEPLOYMENT_TARGET" = "15.0";
         "SWIFT_EMIT_LOC_STRINGS" = "YES";
         "ENABLE_TESTABILITY" = "YES";
@@ -814,6 +849,7 @@
     "0500089CBF0A8CDDA7483BA4" = {
       "isa" = "PBXGroup";
       "children" = (
+        "A20260000000000000000008",
         "83F400C2D4ADECC1E1568F9B",
         "E257553721594F19A2271D65",
         "8D595B3F2088CA26B37C2E4B",
@@ -824,6 +860,9 @@
     "66ADC382DA4DC6DC7D4A96AB" = {
       "isa" = "PBXGroup";
       "children" = (
+        "A20260000000000000000001",
+        "A20260000000000000000003",
+        "A20260000000000000000002",
         "0B0013E27DC073230D8F6C46",
         "CBF1044F943A0EC024CAE356",
         "0D515B0AFE34D643FAF79C3F",
@@ -842,8 +881,8 @@
         "CODE_SIGNING_ALLOWED" = "NO";
         "CODE_SIGN_STYLE" = "Automatic";
         "ENABLE_BITCODE" = "NO";
-        "CURRENT_PROJECT_VERSION" = "202";
-        "MARKETING_VERSION" = "1.5.20";
+        "CURRENT_PROJECT_VERSION" = "203";
+        "MARKETING_VERSION" = "1.5.21";
         "IPHONEOS_DEPLOYMENT_TARGET" = "15.0";
         "ASSETCATALOG_COMPILER_APPICON_NAME" = "AppIcon";
         "SWIFT_EMIT_LOC_STRINGS" = "YES";
@@ -864,8 +903,8 @@
         "CODE_SIGNING_ALLOWED" = "NO";
         "CODE_SIGN_STYLE" = "Automatic";
         "ENABLE_BITCODE" = "NO";
-        "CURRENT_PROJECT_VERSION" = "202";
-        "MARKETING_VERSION" = "1.5.20";
+        "CURRENT_PROJECT_VERSION" = "203";
+        "MARKETING_VERSION" = "1.5.21";
         "IPHONEOS_DEPLOYMENT_TARGET" = "15.0";
         "ASSETCATALOG_COMPILER_APPICON_NAME" = "AppIcon";
         "SWIFT_EMIT_LOC_STRINGS" = "YES";
@@ -916,6 +955,7 @@
       "projectDirPath" = "";
       "projectRoot" = "";
       "targets" = (
+        "A2026000000000000000000c",
         "27EFB0F23E073FF7355A26BA",
         "0CB25BB09F917B2FE04AA3D5",
         "575AD2D6EA9D08471F024672",

@@ -91,6 +91,38 @@ private struct AppleAlbumSession {
 
     static func identifier() -> String { UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "") }
 
+    static func verify(peer: AppleSyncTransport.Peer, local: AppleSyncTransport.Identity,
+                       confirmedScope: Bool) async throws {
+        let channel = try await AppleSyncTransport.authenticate(peer, local: local)
+        do {
+            if confirmedScope {
+                let context = ["job": identifier(), "epoch": identifier(), "scope": "ordinary195"]
+                var request = control("scope195", context)
+                request["platform"] = "ios"
+                request["operation"] = "album-connect1"
+                try await channel.sendObject(1, request)
+                let ready = try await channel.receiveObject(1)
+                try checkContext(ready, context)
+                if ready["op"] as? String == "scope-denied200" {
+                    throw AppleSyncTransport.Failure.rejected("mode173")
+                }
+                if ready["op"] as? String == "scope-busy195" {
+                    throw AppleSyncTransport.Failure.rejected("busy")
+                }
+                guard ready["op"] as? String == "scope-ready195", ready["platform"] as? String == "android",
+                      ready["operation"] as? String == "album-connect1" else { throw MediaError193.verification }
+                try await channel.sendObject(1, control("scope-done195", context))
+                let done = try await channel.receiveObject(1)
+                try checkContext(done, context)
+                guard done["op"] as? String == "scope-done195" else { throw MediaError193.verification }
+            }
+        } catch {
+            await channel.close()
+            throw error
+        }
+        await channel.close()
+    }
+
     func transfer(peer: AppleSyncTransport.Peer, local: AppleSyncTransport.Identity, album: PhotoSyncLibrary.Album,
                   sendTo androidTarget: String?, receiveFrom androidSource: String?, receiveAllAndroid: Bool = false, allowICloud: Bool,
                   progress: @escaping (TransferStatus) -> Void) async throws -> String {
@@ -257,6 +289,7 @@ private struct AppleAlbumSession {
 final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegate, NetServiceDelegate {
     private let nearbyDevices = UIStackView()
     private var deviceBrowser: NetServiceBrowser?
+    private var discoveryDeadline: DispatchWorkItem?
     private var presenceService: NetService?
     private var resolvingDevices: [String: NetService] = [:]
     private var nearbyAddresses: [String: String] = [:]
@@ -264,6 +297,8 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
     private let storage: SecureStorage
     private let pairing = UIButton(type: .system), start = UIButton(type: .system)
     private let connectDevice = UIButton(type: .system)
+    private let searchDevices = UIButton(type: .system)
+    private let discoveryStatus = UILabel()
     private let pages = UISegmentedControl(items: ["连接设备", "配对设备"])
     private var connectionOptions: UIView?
     private var pairingOptions: UIView?
@@ -286,6 +321,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
     }()
     private var statusEpoch = 0
     private var job: Task<Void, Never>?
+    private var syncActivity: Any?
     private var codeReply: CheckedContinuation<Bool, Never>?
     private static var wakeLeases = 0
     private static var previousIdleTimer = false
@@ -310,6 +346,15 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         pairing.addTarget(self, action: #selector(pair), for: .touchUpInside)
         connectDevice.configuration = Self.action(title: "连接已配对设备", symbol: "wifi")
         connectDevice.addTarget(self, action: #selector(verifyConnection), for: .touchUpInside)
+        searchDevices.configuration = Self.action(title: "搜索附近设备", symbol: "magnifyingglass")
+        searchDevices.addTarget(self, action: #selector(rescanDevices), for: .touchUpInside)
+        let help = UIButton(type: .system)
+        help.configuration = Self.action(title: "连接帮助与诊断", symbol: "questionmark.circle")
+        help.addTarget(self, action: #selector(showConnectionHelp), for: .touchUpInside)
+        discoveryStatus.font = .preferredFont(forTextStyle: .footnote)
+        discoveryStatus.adjustsFontForContentSizeCategory = true
+        discoveryStatus.textColor = .secondaryLabel
+        discoveryStatus.numberOfLines = 0
         pages.selectedSegmentIndex = 0
         pages.addTarget(self, action: #selector(switchDevicePage), for: .valueChanged)
         start.configuration = Self.action(title: "开始同步", symbol: "arrow.left.arrow.right", primary: true)
@@ -331,13 +376,15 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         nearbyDevices.spacing = 8
         let networkHint = Self.label("在 Android 打开「同步设备」。如果热点上没有自动发现，请手动填写 Android 页面显示的局域网 IP。", style: .footnote)
         networkHint.textColor = .secondaryLabel
-        let devices = Self.card("附近设备", fields: [nearbyDevices, address, networkHint])
+        let devices = Self.card("附近设备", fields: [searchDevices, discoveryStatus, nearbyDevices, address, networkHint, help])
         let pairingCard = Self.card("新设备配对", fields: [Self.label("在 Android 打开「同步设备」，并核对 Android 上显示的六位码。", style: .footnote), pairing])
         let connectionCard = Self.card("已配对设备", fields: [connectDevice])
         pairingOptions = pairingCard
         connectionOptions = connectionCard
         refreshNearbyDevices()
         NotificationCenter.default.addObserver(self, selector: #selector(stopDiscovery),
+                                               name: UIApplication.didEnterBackgroundNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(invalidateConnection),
                                                name: UIApplication.didEnterBackgroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(startDiscovery),
                                                name: UIApplication.didBecomeActiveNotification, object: nil)
@@ -438,6 +485,15 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
 
     private func showTransfer(_ update: AppleAlbumSession.TransferStatus) {
         if status.text != update.message { status.text = update.message }
+        if #available(iOS 16.2, *) {
+            let activity = syncActivity as? NocturneTaskActivity
+            if let metrics = update.metrics {
+                activity?.update(phase: "传输中", percent: Int(metrics.fraction * 100),
+                                  rate: metrics.bytesPerSecond, done: metrics.done, total: metrics.total)
+            } else {
+                activity?.update(phase: "核对原片", percent: update.itemProgress.map { Int($0 * 100) })
+            }
+        }
         func bytes(_ count: Int64) -> String {
             byteFormatter.string(fromByteCount: count)
         }
@@ -535,14 +591,46 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         let browser = NetServiceBrowser()
         browser.delegate = self
         deviceBrowser = browser
+        discoveryStatus.text = "正在搜索同一局域网中的 Android 设备…"
         browser.searchForServices(ofType: "_nocturne-sync._tcp.", inDomain: "local.")
+        let deadline = DispatchWorkItem { [weak self, weak browser] in
+            guard let self = self, let browser = browser, self.deviceBrowser === browser,
+                  self.nearbyAddresses.isEmpty else { return }
+            self.discoveryStatus.text = "暂未发现设备。请在 Android 打开「同步设备」，或手动填写局域网 IP。"
+        }
+        discoveryDeadline = deadline
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6, execute: deadline)
         // This DNS-SD record only signals presence. No application socket listens at the discard port.
         let presence = NetService(domain: "local.", type: "_nocturne-ios._tcp.", name: "Nocturne Apple", port: 9)
         presenceService = presence
         presence.publish()
     }
 
+    @objc private func rescanDevices() {
+        guard job == nil else { return }
+        stopDiscovery()
+        startDiscovery()
+    }
+
+    @objc private func showConnectionHelp() {
+        let dialog = UIAlertController(title: "连接帮助与诊断",
+            message: "两台设备需连接同一局域网。在 Android 打开「同步设备」，并允许该 iPhone 同步普通图库。\n\n首次连接时在 iPhone 选择 Android，输入 Android 显示的六位码。已配对后使用「连接设备」，无需再次输入代码。\n\n找不到设备时，可使用 Android 页面显示的局域网 IP，并检查 iOS 设置中的「本地网络」权限。", preferredStyle: .alert)
+        dialog.addAction(UIAlertAction(title: "打开系统设置", style: .default) { _ in
+            if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+        })
+        dialog.addAction(UIAlertAction(title: "关闭", style: .cancel))
+        present(dialog, animated: true)
+    }
+
+    func netServiceBrowser(_ browser: NetServiceBrowser, didNotSearch errorDict: [String: NSNumber]) {
+        guard browser === deviceBrowser else { return }
+        stopDiscovery()
+        discoveryStatus.text = "自动搜索不可用。请检查 iOS 本地网络权限，或手动填写 Android 的局域网 IP。"
+    }
+
     @objc private func stopDiscovery() {
+        discoveryDeadline?.cancel()
+        discoveryDeadline = nil
         deviceBrowser?.stop()
         deviceBrowser?.delegate = nil
         deviceBrowser = nil
@@ -575,6 +663,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         guard resolvingDevices[sender.name] === sender, sender.port == 48773,
               let ip = sender.addresses?.compactMap(Self.localIPv4).first else { return }
         nearbyAddresses[sender.name] = ip
+        discoveryStatus.text = nil
         refreshNearbyDevices()
     }
 
@@ -623,12 +712,13 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
 
     @objc private func cancelActive() {
         job?.cancel()
+        finishLiveSync("已暂停")
         if let pending = codeReply { codeReply = nil; pending.resume(returning: false) }
     }
 
     private func setBusy(_ running: Bool) {
         nearbyDevices.isUserInteractionEnabled = !running
-        let controls: [UIControl] = [address, pages, pairing, connectDevice, start]
+        let controls: [UIControl] = [address, pages, pairing, connectDevice, start, searchDevices]
         controls.forEach { $0.isEnabled = !running }
         navigationController?.isModalInPresentation = running
         navigationItem.leftBarButtonItem = running
@@ -641,6 +731,15 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
     }
 
     private var enteredAddress: String { address.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" }
+
+    @objc private func invalidateConnection() {
+        if verifiedAddress != nil {
+            verifiedAddress = nil
+            canReceiveOrdinaryLibrary = false
+            if job == nil { status.text = "应用已切到后台。请重新连接设备。" }
+        }
+        switchDevicePage()
+    }
 
     @objc private func switchDevicePage() {
         let pairingPage = pages.selectedSegmentIndex == 1
@@ -673,8 +772,8 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
             let remote = try await AppleSyncTransport.probe(address: ip, pin: stored.pin)
             guard remote.id == stored.id else { throw AppleSyncTransport.Failure.changedPeer }
             let peer = try stored.connect(address: ip)
-            let channel = try await AppleSyncTransport.authenticate(peer, local: session.local(settings))
-            await channel.close()
+            try await AppleAlbumSession.verify(peer: peer, local: session.local(settings),
+                                               confirmedScope: remote.supportsAlbumConnection)
             try Task.checkCancellation()
             settings.peer = AppleAlbumSession.StoredPeer(peer, trusted: true)
             try session.save(settings)
@@ -764,6 +863,11 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
             }
             try Task.checkCancellation()
             let statusEpoch = self.statusEpoch
+            if #available(iOS 16.2, *) {
+                let activity = NocturneTaskActivity(.sync)
+                self.syncActivity = activity
+                activity.start("核对原片")
+            }
             self.status.text = try await session.transfer(peer: peer, local: session.local(settings), album: .all,
                 sendTo: "Nocturne", receiveFrom: nil, receiveAllAndroid: true,
                 allowICloud: true) { [weak self] update in
@@ -792,9 +896,19 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
                 self.job = nil
                 self.setBusy(false)
             }
-            do { try await action() }
-            catch { self.show(error) }
+            do {
+                try await action()
+                self.finishLiveSync(Task.isCancelled ? "已暂停" : "已完成", complete: !Task.isCancelled)
+            } catch {
+                self.finishLiveSync(Task.isCancelled ? "已暂停" : "未完成")
+                self.show(error)
+            }
         }
+    }
+
+    private func finishLiveSync(_ phase: String, complete: Bool = false) {
+        if #available(iOS 16.2, *) { (syncActivity as? NocturneTaskActivity)?.end(phase, complete: complete) }
+        syncActivity = nil
     }
 
     private func show(_ error: Error) {
@@ -804,7 +918,11 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
             verifiedAddress = nil
             switchDevicePage()
             status.text = "Android 身份验证未通过。请确认地址属于要连接的设备；若 Android 已更换安装或身份，请手动重新配对。"
-        case AppleSyncTransport.Failure.authentication: status.text = "配对凭证未通过验证。请到「配对设备」重新核对六位码。"
+        case AppleSyncTransport.Failure.authentication:
+            verifiedAddress = nil
+            canReceiveOrdinaryLibrary = false
+            switchDevicePage()
+            status.text = "配对凭证未通过验证。请到「配对设备」重新核对六位码。"
         case AppleSyncTransport.Failure.rejected("not-android"): status.text = "此地址回应的不是 Android 设备。请检查设备列表或 Android 上显示的地址。"
         case AppleSyncTransport.Failure.rejected("android-all-version"): status.text = "当前 Android 版本不支持发送全部图库。请先更新 Android。"
         case AppleSyncTransport.Failure.rejected("album-version"): status.text = "已找到 Android，但该版本不支持跨平台相册同步。请先升级 Android 客户端。"

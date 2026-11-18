@@ -15,6 +15,9 @@ final class PhotoRepository: NSObject, PHPhotoLibraryChangeObserver {
     private var result: PHFetchResult<PHAsset>?
     var changed: (() -> Void)?
     var progress: ((Double, String) -> Void)?
+    #if !NOCTURNE_LEGACY
+    private var cacheActivity: Any?
+    #endif
     private var epoch = 0
     private var externalChange: DispatchWorkItem?
     private var preparationFailed = 0
@@ -43,6 +46,7 @@ final class PhotoRepository: NSObject, PHPhotoLibraryChangeObserver {
         else { PHPhotoLibrary.requestAuthorization(finish) }
     }
     func synchronize() {
+        endCacheActivity()
         externalChange?.cancel()
         externalChange = nil
         guard storage.isUnlocked193 else { return }
@@ -322,7 +326,14 @@ final class PhotoRepository: NSObject, PHPhotoLibraryChangeObserver {
         let token = epoch, list = assets, started = ProcessInfo.processInfo.systemUptime
         preparationFailed = 0
         guard !list.isEmpty else { progress?(1, ""); return }
-        var next = 0, done = 0, completedWeight = 0.0
+        #if !NOCTURNE_LEGACY
+        if #available(iOS 16.2, *), !storage.envelope.privateMode, list.count >= 40 {
+            let activity = (cacheActivity as? NocturneTaskActivity) ?? NocturneTaskActivity(.cache)
+            cacheActivity = activity
+            activity.start("准备中")
+        }
+        #endif
+        var next = 0, done = 0, completedWeight = 0.0, lastProgress = started
         func weight(_ asset: MediaAsset193) -> Double {
             let megapixels = Double(asset.pixelWidth) * Double(asset.pixelHeight) / 1_000_000
             return (asset.mediaType == .video ? 4 : 1) + sqrt(max(0, megapixels)) * 0.3
@@ -336,10 +347,25 @@ final class PhotoRepository: NSObject, PHPhotoLibraryChangeObserver {
             thumbnail(item) { [weak self] image in
                 guard let self = self, token == self.epoch, !completed else { return }
                 completed = true; done += 1; completedWeight += weight(item); if image == nil { self.preparationFailed += 1 }
-                let elapsed = max(0.1, ProcessInfo.processInfo.systemUptime - started)
-                let remaining = elapsed / max(0.1, completedWeight) * max(0, totalWeight - completedWeight)
-                self.progress?(completedWeight / max(1, totalWeight), Strings.text("准备缩略图", "Preparing thumbnails", "サムネイルを準備中", "準備縮圖") + " · \(Int(ceil(remaining))) s")
+                let now = ProcessInfo.processInfo.systemUptime
+                if done < list.count && (done == 1 || now - lastProgress >= 0.20) {
+                    lastProgress = now
+                    let elapsed = max(0.1, now - started)
+                    let remaining = elapsed / max(0.1, completedWeight) * max(0, totalWeight - completedWeight)
+                    #if !NOCTURNE_LEGACY
+                    if #available(iOS 16.2, *) {
+                        (self.cacheActivity as? NocturneTaskActivity)?.update(phase: "准备中", percent: Int(completedWeight / max(1, totalWeight) * 100))
+                    }
+                    #endif
+                    self.progress?(completedWeight / max(1, totalWeight), Strings.text("准备缩略图", "Preparing thumbnails", "サムネイルを準備中", "準備縮圖") + " · \(Int(ceil(remaining))) s")
+                }
                 if done == list.count {
+                    #if !NOCTURNE_LEGACY
+                    if #available(iOS 16.2, *) {
+                        (self.cacheActivity as? NocturneTaskActivity)?.end(self.preparationFailed == 0 ? "已完成" : "部分不可用", complete: self.preparationFailed == 0)
+                        self.cacheActivity = nil
+                    }
+                    #endif
                     try? self.storage.save()
                     let title = Strings.text("缩略图准备完成", "Thumbnails ready", "サムネイル準備完了", "縮圖準備完成")
                     let details = self.preparationFailed == 0 ? title : title + " · \(self.preparationFailed) " + Strings.text("项不可用（可能为云端原片或权限受限）", "unavailable (possibly cloud-only or restricted)", "項目利用不可（クラウドまたは権限制限の可能性）", "項目無法取得（可能僅存在雲端或權限受限）")
@@ -350,5 +376,11 @@ final class PhotoRepository: NSObject, PHPhotoLibraryChangeObserver {
         }
         lane(); lane()
     }
-    func lock() { externalChange?.cancel(); externalChange = nil; epoch += 1; importing193?.cancel(); importing193 = nil; cancelAdjacent193(); viewerMemory193.removeAllObjects(); inFlight.removeAll(); manager.stopCachingImagesForAllAssets(); memory.removeAllObjects(); assets = []; result = nil }
+    private func endCacheActivity() {
+        #if !NOCTURNE_LEGACY
+        if #available(iOS 16.2, *) { (cacheActivity as? NocturneTaskActivity)?.end("已暂停") }
+        cacheActivity = nil
+        #endif
+    }
+    func lock() { endCacheActivity(); externalChange?.cancel(); externalChange = nil; epoch += 1; importing193?.cancel(); importing193 = nil; cancelAdjacent193(); viewerMemory193.removeAllObjects(); inFlight.removeAll(); manager.stopCachingImagesForAllAssets(); memory.removeAllObjects(); assets = []; result = nil }
 }

@@ -102,6 +102,15 @@ def build_device(base, env, report):
     if (device_info.get('CFBundleIdentifier') != 'com.nocturne.gallery'
             or set(device_info.get('UIDeviceFamily', [])) != {1, 2}):
         raise RuntimeError('Device build must retain the shared iPhone/iPad app identity')
+    extension=app/'PlugIns/NocturneTaskActivity.appex'
+    extension_info=plistlib.loads((extension/'Info.plist').read_bytes())
+    if (not device_info.get('NSSupportsLiveActivities')
+            or extension_info.get('CFBundleIdentifier') != 'com.nocturne.gallery.TaskActivity'
+            or extension_info.get('CFBundleVersion') != device_info.get('CFBundleVersion')
+            or extension_info.get('NSExtension', {}).get('NSExtensionPointIdentifier') != 'com.apple.widgetkit-extension'):
+        raise RuntimeError('Live Activity extension is missing or does not match the app')
+    run(['xcrun','lipo',str(extension/extension_info['CFBundleExecutable']),'-verify_arch','arm64'],'activity-architecture.log',env,60)
+    report['liveActivityEmbedded']=True
     report['ipa']=package(app,OUT/'Nocturne-unsigned.ipa');report['deviceBuildPassed']=True
     (OUT/'IPA-SHA256.txt').write_text(report['ipa']['sha256']+'  Nocturne-unsigned.ipa\n',encoding='utf-8')
 
