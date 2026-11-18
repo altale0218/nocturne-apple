@@ -86,7 +86,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         back.frame = CGRect(x: 12, y: 8, width: 48, height: 48); more.autoresizingMask = [.flexibleLeftMargin]; more.frame = CGRect(x: 260, y: 8, width: 48, height: 48)
         for button in [back, more] { button.tintColor = .white; button.backgroundColor = UIColor(white: 0, alpha: 0.25); button.layer.cornerRadius = 16; chrome.addSubview(button) }
         more.backgroundColor = UIColor(white: 0.14, alpha: 0.58)
-        more.layer.cornerRadius = 24
+        more.layer.cornerRadius = 24; more.clipsToBounds = true
         more.accessibilityLabel = "更多查看器选项"
         more.layer.shadowOpacity = 0
         if #available(iOS 15, *) {
@@ -170,7 +170,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         if zoom.zoomScale == 1 { media.frame = CGRect(origin: .zero, size: zoom.bounds.size); zoom.contentSize = media.bounds.size }
         image.frame = media.bounds
         precision.frame = media.bounds; live193.frame = image.frame; playerLayer.frame = photo ? image.frame : media.bounds
-        chrome.frame = CGRect(x: safe.left, y: safe.top, width: width, height: 64)
+        chrome.frame = CGRect(x: 0, y: 0, width: width, height: 64)
         moreButton193?.frame = CGRect(x: width - 60, y: 8, width: 48, height: 48)
         favorite.frame = CGRect(x: width - 118, y: 8, width: 48, height: 48)
         liveButton199?.frame = CGRect(x: width - 176, y: 8, width: 48, height: 48)
@@ -274,7 +274,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         guard displayedFavorite != liked else { return }
         displayedFavorite = liked
         if #available(iOS 13, *) {
-            let icon = UIImage(systemName: liked ? "heart.fill" : "heart")
+            let icon = UIImage(systemName: liked ? "heart.fill" : "heart")?.withTintColor(liked ? .systemRed : .white, renderingMode: .alwaysOriginal)
             favorite.setImage(icon, for: .normal)
             if #available(iOS 15, *), var configuration = favorite.configuration {
                 configuration.image = icon

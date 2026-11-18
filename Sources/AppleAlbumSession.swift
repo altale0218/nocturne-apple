@@ -601,6 +601,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         discoveryDeadline = deadline
         DispatchQueue.main.asyncAfter(deadline: .now() + 6, execute: deadline)
         // This DNS-SD record only signals presence. No application socket listens at the discard port.
+        guard presenceService == nil else { return }
         let presence = NetService(domain: "local.", type: "_nocturne-ios._tcp.", name: "Nocturne Apple", port: 9)
         presenceService = presence
         presence.delegate = self; presence.publish()
@@ -629,7 +630,11 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
 
     func netServiceBrowser(_ browser: NetServiceBrowser, didNotSearch errorDict: [String: NSNumber]) {
         guard browser === deviceBrowser else { return }
-        stopDiscovery()
+        discoveryDeadline?.cancel()
+        discoveryDeadline = nil
+        browser.delegate = nil
+        browser.stop()
+        deviceBrowser = nil
         discoveryStatus.text = "自动搜索不可用。请检查 iOS 本地网络权限，或手动填写 Android 的局域网 IP。"
     }
 
@@ -918,6 +923,19 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
     }
 
     private func show(_ error: Error) {
+        if pages.selectedSegmentIndex == 1, let network = error as? NWError {
+            switch network {
+            case .posix(let code):
+                status.text = "配对连接失败（网络错误 \(code.rawValue)）。在 iPhone 的 Wi‑Fi 详情核对路由器地址，并与 Android 热点地址比较。"
+            case .tls(let code):
+                status.text = "已到达安全握手阶段，但 TLS 未完成（\(code)）。"
+            case .dns(let code):
+                status.text = "配对地址解析失败（\(code)）。"
+            @unknown default:
+                status.text = "配对网络连接失败。"
+            }
+            return
+        }
         switch error {
         case AppleSyncTransport.Failure.address: status.text = "请输入同一局域网内 Android 的 IP 地址。"
         case AppleSyncTransport.Failure.certificate:

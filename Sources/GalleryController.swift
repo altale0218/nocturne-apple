@@ -18,6 +18,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
     private let sortingTitles = ["拍摄时间 · 新到旧", "拍摄时间 · 旧到新", "最多观看", "名称 A–Z", "最新导入"]
     private var sidebar193: UIView?
     private var draggingDrawer = false
+    private var closingDrawerInteractively = false
     private var sidebarRows193: [(String, String, () -> Void)] = []
     private var pinchPreset193 = 1
     private var pinchAnchor193: IndexPath?
@@ -53,11 +54,12 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         let edge = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(revealSidebar193(_:)))
         edge.edges = .left
         view.addGestureRecognizer(edge)
-        let swipe = UISwipeGestureRecognizer(target: self, action: #selector(openSidebarSwipe199))
-        swipe.direction = .right
+        let swipe = UIPanGestureRecognizer(target: self, action: #selector(trackDrawer199(_:)))
+        swipe.maximumNumberOfTouches = 1
+        swipe.minimumNumberOfTouches = 1
         swipe.delegate = self
         collection.addGestureRecognizer(swipe)
-        collection.panGestureRecognizer.require(toFail: edge)
+        swipe.require(toFail: edge)
         collection.addGestureRecognizer(UILongPressGestureRecognizer(target: self, action: #selector(reorder(_:))))
         collection.dataSource = self; collection.delegate = self; collection.prefetchDataSource = self; collection.allowsMultipleSelection = true
         collection.register(MediaCell.self, forCellWithReuseIdentifier: MediaCell.reuse)
@@ -101,7 +103,12 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
     }
     private var drawerWidth193: CGFloat { min(360, view.bounds.width * 0.74) }
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        gestureRecognizer is UISwipeGestureRecognizer && otherGestureRecognizer === collection.panGestureRecognizer
+        gestureRecognizer is UIPanGestureRecognizer && otherGestureRecognizer === collection.panGestureRecognizer
+    }
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return true }
+        let velocity = pan.velocity(in: view)
+        return !selecting193 && abs(velocity.x) > abs(velocity.y) && (sidebar193 == nil ? velocity.x > 0 : velocity.x < 0)
     }
     override func viewWillAppear(_ animated: Bool) { super.viewWillAppear(animated); galleryVisible = true; applyTheme(); startMotion(); updatePreviews() }
     override func viewWillDisappear(_ animated: Bool) { super.viewWillDisappear(animated); galleryVisible = false; stopMotion(); previews.values.forEach { $0.pause() } }
@@ -452,8 +459,12 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
             let steps = Int(max(-limit, min(limit, (log(scale) / log(1.25)).rounded())))
             let preset = sizes[max(0, min(sizes.count - 1, pinchPreset193 + steps))]
             guard preset != layout.sizePreset else { return }
-            layout.sizePreset = preset
-            collection.layoutIfNeeded()
+            let reflow: () -> Void = {
+                self.layout.sizePreset = preset
+                self.collection.layoutIfNeeded()
+            }
+            if UIAccessibility.isReduceMotionEnabled || storage.state.settings.reducedMotion { reflow() }
+            else { UIView.animate(withDuration: 0.20, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction, .curveEaseOut], animations: reflow) }
             if let anchor = pinchAnchor193, let attributes = layout.layoutAttributesForItem(at: anchor) {
                 let minimum = -collection.contentInset.top
                 let maximum = max(minimum, collection.contentSize.height - collection.bounds.height + collection.contentInset.bottom)
@@ -470,13 +481,34 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         }
     }
 
-    @objc private func openSidebarSwipe199() { if sidebar193 == nil && !selecting193 { navigate() } }
+    @objc private func trackDrawer199(_ gesture: UIPanGestureRecognizer) {
+        let x = gesture.translation(in: view).x
+        if gesture.state == .began {
+            let v = gesture.velocity(in: view)
+            guard !selecting193, abs(v.x) > abs(v.y), (sidebar193 == nil ? v.x > 0 : v.x < 0) else { return }
+            closingDrawerInteractively = sidebar193 != nil
+            draggingDrawer = true
+            if !closingDrawerInteractively { navigate() }
+        } else if gesture.state == .changed, draggingDrawer {
+            let offset = min(drawerWidth193, max(0, (closingDrawerInteractively ? drawerWidth193 : 0) + x))
+            foreground.transform = CGAffineTransform(translationX: offset, y: 0)
+            drawerDismissControl?.alpha = offset / max(1, drawerWidth193)
+        } else if gesture.state == .ended || gesture.state == .cancelled || gesture.state == .failed {
+            guard draggingDrawer else { return }
+            draggingDrawer = false
+            let projected = x + gesture.velocity(in: view).x * 0.14
+            let open = gesture.state != .ended ? closingDrawerInteractively :
+                (closingDrawerInteractively ? projected > -drawerWidth193 * 0.35 : projected > drawerWidth193 * 0.35)
+            if open { animateDrawerOpen() } else { dismissSidebar193() }
+        }
+    }
 
     @objc private func revealSidebar193(_ edge: UIScreenEdgePanGestureRecognizer) {
         guard !selecting193 else { return }
         switch edge.state {
         case .began:
             guard sidebar193 == nil else { return }
+            closingDrawerInteractively = false
             draggingDrawer = true
             navigate()
         case .changed:
@@ -509,7 +541,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
                 let controller = PrivateDuplicateList204(groups: groups, gallery: self, lease: lease)
                 let navigation = UINavigationController(rootViewController: controller)
                 if #available(iOS 13, *) { navigation.overrideUserInterfaceStyle = self.dark ? .dark : .light }
-                navigation.modalPresentationStyle = .fullScreen; self.present(navigation, animated: true)
+                navigation.modalPresentationStyle = .fullScreen; navigation.modalTransitionStyle = .crossDissolve; self.present(navigation, animated: true)
             }
         }
     }
@@ -562,12 +594,12 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
                         storage: self.storage, album: .all, lease: lease, scanOnOpen: true)
                     let navigation = UINavigationController(rootViewController: controller)
                     navigation.isModalInPresentation = true
-                    navigation.modalPresentationStyle = .fullScreen; self.present(navigation, animated: true)
+                    navigation.modalPresentationStyle = .fullScreen; navigation.modalTransitionStyle = .crossDissolve; self.present(navigation, animated: true)
                 }
             }))
             sidebarRows193.append(("手机相册同步", "iphone.and.arrow.forward", { [weak self] in
                 guard let self = self else { return }
-                let navigation = UINavigationController(rootViewController: AppleAlbumSyncController(storage: self.storage)); navigation.modalPresentationStyle = .fullScreen; navigation.modalPresentationStyle = .fullScreen; self.present(navigation, animated: true)
+                let navigation = UINavigationController(rootViewController: AppleAlbumSyncController(storage: self.storage)); navigation.modalPresentationStyle = .fullScreen; navigation.modalTransitionStyle = .crossDissolve; self.present(navigation, animated: true)
             }))
             #endif
         }
@@ -646,10 +678,10 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         foreground.clipsToBounds = true
         if #available(iOS 13, *) { foreground.layer.cornerCurve = .continuous }
         foreground.layer.cornerRadius = 34
-        let close = UISwipeGestureRecognizer(target: self, action: #selector(dismissSidebar193))
-        close.direction = .left; surface.addGestureRecognizer(close)
-        let closeFromGallery = UISwipeGestureRecognizer(target: self, action: #selector(dismissSidebar193))
-        closeFromGallery.direction = .left; scrim.addGestureRecognizer(closeFromGallery)
+        for host in [surface, scrim] {
+            let close = UIPanGestureRecognizer(target: self, action: #selector(trackDrawer199(_:)))
+            close.maximumNumberOfTouches = 1; close.delegate = self; host.addGestureRecognizer(close)
+        }
         scrim.alpha = 0
         if !draggingDrawer { animateDrawerOpen() }
         UIAccessibility.post(notification: .screenChanged, argument: header)
@@ -669,7 +701,9 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
     @objc private func dismissSidebar193() { closeSidebar193() }
     @objc private func selectSidebar193(_ sender: UIButton) {
         guard sidebarRows193.indices.contains(sender.tag) else { return }
-        closeSidebar193(sidebarRows193[sender.tag].2)
+        let action = sidebarRows193[sender.tag].2
+        closeSidebar193()
+        action()
     }
     private func closeSidebar193(_ completion: (() -> Void)? = nil) {
         guard let overlay = sidebar193, overlay.isUserInteractionEnabled else { return }
@@ -696,7 +730,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         let settings = SettingsController(storage: storage)
         settings.changed = { [weak self] in self?.applyTheme(); self?.reload() }
         settings.modeChanged = storage.envelope.privateMode ? locked : openPrivate193
-        let navigation = UINavigationController(rootViewController: settings); navigation.modalPresentationStyle = .fullScreen
+        let navigation = UINavigationController(rootViewController: settings); navigation.modalPresentationStyle = .fullScreen; navigation.modalTransitionStyle = .crossDissolve
         present(navigation, animated: true)
         navigation.presentationController?.delegate = settings
     }
