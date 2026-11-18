@@ -20,6 +20,7 @@
     "A2026000000000000000000d" = { "isa" = "XCConfigurationList"; "buildConfigurations" = ("A2026000000000000000000e", "A2026000000000000000000f",); "defaultConfigurationIsVisible" = 0; "defaultConfigurationName" = "Release"; };
     "A2026000000000000000000e" = { "isa" = "XCBuildConfiguration"; "name" = "Debug"; "buildSettings" = {
         "APPLICATION_EXTENSION_API_ONLY" = "YES"; "CURRENT_PROJECT_VERSION" = "203";
+        "CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]" = "YES"; "CODE_SIGN_IDENTITY[sdk=iphonesimulator*]" = "-";
         "GENERATE_INFOPLIST_FILE" = "YES"; "INFOPLIST_FILE" = "Resources/TaskActivity-Info.plist";
         "IPHONEOS_DEPLOYMENT_TARGET" = "16.2"; "MARKETING_VERSION" = "1.5.21";
         "PRODUCT_BUNDLE_IDENTIFIER" = "com.nocturne.gallery.TaskActivity"; "PRODUCT_NAME" = "NocturneTaskActivity";
@@ -28,6 +29,7 @@
       }; };
     "A2026000000000000000000f" = { "isa" = "XCBuildConfiguration"; "name" = "Release"; "buildSettings" = {
         "APPLICATION_EXTENSION_API_ONLY" = "YES"; "CURRENT_PROJECT_VERSION" = "203";
+        "CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]" = "YES"; "CODE_SIGN_IDENTITY[sdk=iphonesimulator*]" = "-";
         "GENERATE_INFOPLIST_FILE" = "YES"; "INFOPLIST_FILE" = "Resources/TaskActivity-Info.plist";
         "IPHONEOS_DEPLOYMENT_TARGET" = "16.2"; "MARKETING_VERSION" = "1.5.21";
         "PRODUCT_BUNDLE_IDENTIFIER" = "com.nocturne.gallery.TaskActivity"; "PRODUCT_NAME" = "NocturneTaskActivity";
