@@ -5,14 +5,17 @@ import PhotosUI
 #endif
 import AVFoundation
 
-final class GalleryController: UIViewController, UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDataSourcePrefetching {
+final class GalleryController: UIViewController, UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDataSourcePrefetching, UIGestureRecognizerDelegate {
     let repository: PhotoRepository, storage: SecureStorage, clock: SessionClock
     let layout = GalleryLayout(), background = FlowBackground(), panel = PreparationPanel()
     private(set) var collection: UICollectionView!
     private let toolbar = UIStackView(), titleLabel = UILabel()
     private let toolbarGlass193 = NativeGlass193()
+    private let foreground = UIView()
+    private weak var drawerDismissControl: UIControl?
     private var shown: [MediaAsset193] = []
     private var filter = "all"
+    private let sortingTitles = ["拍摄时间 · 新到旧", "拍摄时间 · 旧到新", "最多观看", "名称 A–Z", "最新导入"]
     private var sidebar193: UIView?
     private var sidebarRows193: [(String, String, () -> Void)] = []
     private var pinchPreset193 = 1
@@ -40,7 +43,8 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.addSubview(background)
+        view.addSubview(foreground)
+        foreground.addSubview(background)
         collection = UICollectionView(frame: .zero, collectionViewLayout: layout)
         collection.backgroundColor = .clear; collection.alwaysBounceVertical = true
         collection.contentInsetAdjustmentBehavior = .never; collection.showsHorizontalScrollIndicator = false
@@ -49,21 +53,22 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         edge.edges = .left
         view.addGestureRecognizer(edge)
         let swipe = UISwipeGestureRecognizer(target: self, action: #selector(openSidebarSwipe199))
-        swipe.direction = .left
+        swipe.direction = .right
+        swipe.delegate = self
         collection.addGestureRecognizer(swipe)
         collection.panGestureRecognizer.require(toFail: edge)
         collection.addGestureRecognizer(UILongPressGestureRecognizer(target: self, action: #selector(reorder(_:))))
         collection.dataSource = self; collection.delegate = self; collection.prefetchDataSource = self; collection.allowsMultipleSelection = true
         collection.register(MediaCell.self, forCellWithReuseIdentifier: MediaCell.reuse)
         collection.register(CaptureDayHeader199.self, forSupplementaryViewOfKind: GalleryLayout.dayHeader, withReuseIdentifier: GalleryLayout.dayHeader)
-        view.addSubview(collection)
+        foreground.addSubview(collection)
         toolbar.axis = .horizontal; toolbar.alignment = .center; toolbar.spacing = 8; toolbar.distribution = .fill
         let nav = Theme.button("line.3.horizontal", target: self, action: #selector(navigate)); nav.widthAnchor.constraint(equalToConstant: 44).isActive = true
         toolbar.addArrangedSubview(nav)
         titleLabel.font = .systemFont(ofSize: 20, weight: .semibold); titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); toolbar.addArrangedSubview(titleLabel)
         let mode = Theme.button("ellipsis", target: self, action: #selector(chooseMode)); mode.widthAnchor.constraint(equalToConstant: 44).isActive = true; toolbar.addArrangedSubview(mode)
         let sync = Theme.button("ellipsis", target: self, action: #selector(synchronize)); sync.widthAnchor.constraint(equalToConstant: 44).isActive = true; toolbar.addArrangedSubview(sync)
-        toolbarGlass193.contentView.addSubview(toolbar); view.addSubview(toolbarGlass193); view.addSubview(panel)
+        toolbarGlass193.contentView.addSubview(toolbar); foreground.addSubview(toolbarGlass193); foreground.addSubview(panel)
         if #available(iOS 15, *) { for case let button as UIButton in toolbar.arrangedSubviews { var plain = UIButton.Configuration.plain(); plain.image = button.image(for: .normal); button.configuration = plain } }
         repository.changed = { [weak self] in self?.reload() }
         repository.progress = { [weak self] value, message in self?.panel.update(value, message: message) }
@@ -73,6 +78,8 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
     }
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        foreground.bounds = view.bounds
+        foreground.center = CGPoint(x: view.bounds.midX, y: view.bounds.midY)
         background.frame = view.bounds
         let safe = view.safeAreaInsets
         toolbarGlass193.frame = CGRect(x: safe.left + 12, y: safe.top + 4, width: max(1, view.bounds.width - safe.left - safe.right - 24), height: 60)
@@ -84,14 +91,16 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         if !placedInsets193 || atTop { collection.contentOffset.y = -collection.contentInset.top }
         else if previousTop != collection.contentInset.top { collection.contentOffset.y += previousTop - collection.contentInset.top }
         placedInsets193 = true
-        panel.restore(in: view)
+        panel.restore(in: foreground)
         if let overlay = sidebar193 {
             overlay.frame = view.bounds
-            overlay.subviews.first?.frame = overlay.bounds
-            let width = min(320, max(200, view.bounds.width - safe.left - 52))
-            overlay.subviews.last?.frame = CGRect(x: safe.left + 8, y: safe.top + 4, width: width,
-                                                   height: max(1, view.bounds.height - safe.top - safe.bottom - 12))
+            overlay.subviews.first?.frame = CGRect(x: 0, y: 0, width: drawerWidth193, height: view.bounds.height)
+            if overlay.isUserInteractionEnabled { foreground.transform = CGAffineTransform(translationX: drawerWidth193, y: 0) }
         }
+    }
+    private var drawerWidth193: CGFloat { min(360, view.bounds.width * 0.74) }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        gestureRecognizer is UISwipeGestureRecognizer && otherGestureRecognizer === collection.panGestureRecognizer
     }
     override func viewWillAppear(_ animated: Bool) { super.viewWillAppear(animated); galleryVisible = true; applyTheme(); startMotion(); updatePreviews() }
     override func viewWillDisappear(_ animated: Bool) { super.viewWillDisappear(animated); galleryVisible = false; stopMotion(); previews.values.forEach { $0.pause() } }
@@ -125,11 +134,23 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
             switch sort {
             case 1: shown.sort { ($0.creationDate ?? .distantFuture) < ($1.creationDate ?? .distantFuture) }
             case 2: shown.sort { (records[$0.localIdentifier]?.views ?? 0) > (records[$1.localIdentifier]?.views ?? 0) }
+            case 3:
+                shown = shown.map { asset -> (MediaAsset193, String) in
+                    let filename = asset.native.flatMap { PHAssetResource.assetResources(for: $0).first?.originalFilename }
+                    return (asset, filename ?? asset.encrypted?.parts.first?.filename ?? asset.localIdentifier)
+                }.sorted { $0.1.localizedStandardCompare($1.1) == .orderedAscending }.map { $0.0 }
+            case 4:
+                shown = shown.map { asset -> (MediaAsset193, Date) in
+                    #if compiler(>=6.2)
+                    if #available(iOS 26, *), let date = asset.native?.addedDate { return (asset, date) }
+                    #endif
+                    return (asset, asset.encrypted?.imported ?? asset.creationDate ?? .distantPast)
+                }.sorted { $0.1 > $1.1 }.map { $0.0 }
             default: shown.sort { ($0.creationDate ?? .distantPast) > ($1.creationDate ?? .distantPast) }
             }
         }
         var days: [Int: String] = [:]
-        if (settings.groupDates199 ?? true) && filter != "star" && sort != 2 {
+        if (settings.groupDates199 ?? true) && filter != "star" && sort < 2 {
             let calendar = Calendar.current
             var previous: Date?
             let formatter = DateFormatter()
@@ -345,22 +366,24 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
             action("星河", "sparkles", p.mode == .galaxy) { $0.mode = .galaxy }
         ])
         let sizes = UIMenu(title: "片源大小", image: UIImage(systemName: "arrow.up.left.and.arrow.down.right"), children:
-            ["密集", "紧凑", "均衡", "大图"].enumerated().map { i, title in
-                action(title, "square.grid.2x2", p.sizePreset == i) { $0.gallerySize122 = i }
+            zip(GalleryRules122.gallerySizes, GalleryRules122.gallerySizeTitles).map { size, title in
+                action(title, "square.grid.2x2", p.sizePreset == size) { $0.gallerySize122 = size }
             })
         let sorting = UIMenu(title: "排序", image: UIImage(systemName: "arrow.up.arrow.down"), children:
-            ["拍摄时间 · 新到旧", "拍摄时间 · 旧到新", "最多观看"].enumerated().map { i, title in
+            sortingTitles.enumerated().map { i, title in
                 action(title, i == 2 ? "eye" : "calendar", (p.sortGallery199 ?? 0) == i) { $0.sortGallery199 = i }
             })
         let toggles = UIMenu(title: "显示", image: UIImage(systemName: "slider.horizontal.3"), children: [
-            action("按拍摄日期分组", "calendar", (p.groupDates199 ?? true) && (p.sortGallery199 ?? 0) != 2) {
-                $0.groupDates199 = !($0.groupDates199 ?? true) || $0.sortGallery199 == 2
-                if $0.sortGallery199 == 2 { $0.sortGallery199 = 0 }
+            action("按拍摄日期分组", "calendar", (p.groupDates199 ?? true) && (p.sortGallery199 ?? 0) < 2) {
+                let nonDateOrder = ($0.sortGallery199 ?? 0) >= 2
+                $0.groupDates199 = !($0.groupDates199 ?? true) || nonDateOrder
+                if nonDateOrder { $0.sortGallery199 = 0 }
             },
             action("1:1 方形缩略图", "square", p.squareTiles) { $0.squareTiles193 = !$0.squareTiles },
             action("方形卡片保留圆角", "app", p.roundedSquare) { $0.roundedSquare193 = !$0.roundedSquare },
             action("显示视频时长", "timer", p.showDuration) { $0.showDuration.toggle() },
-            action("显示观看次数", "eye", p.showViews) { $0.showViews.toggle() }
+            action("显示观看次数", "eye", p.showViews) { $0.showViews.toggle() },
+            action("实时视频预览", "play.rectangle", p.previewVideos) { $0.previewVideos.toggle() }
         ])
         return [modes, sizes, sorting, toggles]
     }
@@ -378,23 +401,28 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         }
         add("平铺", p.mode == .tiles) { $0.mode = .tiles }
         add("星河", p.mode == .galaxy) { $0.mode = .galaxy }
-        add("按拍摄日期分组", p.groupDates199 ?? true) { $0.groupDates199 = !($0.groupDates199 ?? true); if $0.sortGallery199 == 2 { $0.sortGallery199 = 0 } }
+        add("按拍摄日期分组", (p.groupDates199 ?? true) && (p.sortGallery199 ?? 0) < 2) {
+            let nonDateOrder = ($0.sortGallery199 ?? 0) >= 2
+            $0.groupDates199 = !($0.groupDates199 ?? true) || nonDateOrder
+            if nonDateOrder { $0.sortGallery199 = 0 }
+        }
         add("1:1 方形缩略图", p.squareTiles) { $0.squareTiles193 = !$0.squareTiles }
         add("方形卡片保留圆角", p.roundedSquare) { $0.roundedSquare193 = !$0.roundedSquare }
         add("显示视频时长", p.showDuration) { $0.showDuration.toggle() }
         add("显示观看次数", p.showViews) { $0.showViews.toggle() }
-        for (index, title) in ["拍摄时间 · 新到旧", "拍摄时间 · 旧到新", "最多观看"].enumerated() {
+        add("实时视频预览", p.previewVideos) { $0.previewVideos.toggle() }
+        for (index, title) in sortingTitles.enumerated() {
             add(title, (p.sortGallery199 ?? 0) == index) { $0.sortGallery199 = index }
         }
-        for (index, title) in ["密集", "紧凑", "均衡", "大图"].enumerated() {
-            add(title, p.sizePreset == index) { $0.gallerySize122 = index }
+        for (size, title) in zip(GalleryRules122.gallerySizes, GalleryRules122.gallerySizeTitles) {
+            add(title, p.sizePreset == size) { $0.gallerySize122 = size }
         }
         alert.addAction(UIAlertAction(title: Strings.cancel, style: .cancel)); anchor(alert); present(alert, animated: true)
     }
     @objc private func resizeGrid193(_ gesture: UIPinchGestureRecognizer) {
         guard !selecting193, sidebar193 == nil else { return }
         if gesture.state == .began {
-            pinchPreset193 = layout.sizePreset
+            pinchPreset193 = GalleryRules122.gallerySizes.firstIndex(of: layout.sizePreset) ?? 3
             let point = gesture.location(in: collection)
             pinchAnchor193 = collection.indexPathForItem(at: point)
             if let anchor = pinchAnchor193, let attributes = layout.layoutAttributesForItem(at: anchor) {
@@ -404,8 +432,10 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         if gesture.state == .changed {
             let scale = Double(gesture.scale)
             guard scale.isFinite, scale > 0 else { return }
-            let steps = Int(max(-3, min(3, (log(scale) / log(1.25)).rounded())))
-            let preset = max(0, min(3, pinchPreset193 + steps))
+            let sizes = GalleryRules122.gallerySizes
+            let limit = Double(sizes.count - 1)
+            let steps = Int(max(-limit, min(limit, (log(scale) / log(1.25)).rounded())))
+            let preset = sizes[max(0, min(sizes.count - 1, pinchPreset193 + steps))]
             guard preset != layout.sizePreset else { return }
             layout.sizePreset = preset
             collection.layoutIfNeeded()
@@ -428,7 +458,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
     @objc private func openSidebarSwipe199() { if sidebar193 == nil && !selecting193 { navigate() } }
 
     @objc private func revealSidebar193(_ edge: UIScreenEdgePanGestureRecognizer) {
-        if edge.state == .ended, edge.translation(in: view).x > 34, sidebar193 == nil { navigate() }
+        if edge.state == .ended, edge.translation(in: view).x > 34, sidebar193 == nil, !selecting193 { navigate() }
     }
 
     @objc private func navigate() {
@@ -463,31 +493,43 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
             }))
             #endif
         }
-        sidebarRows193.append((Strings.settings, "gearshape", { [weak self] in self?.openSettings193() }))
         sidebarRows193.append(("浏览器", "globe", { [weak self] in self?.openBrowser() }))
+        sidebarRows193.append((Strings.settings, "gearshape", { [weak self] in self?.openSettings193() }))
         let overlay = UIView(frame: view.bounds)
-        let scrim = UIControl(frame: overlay.bounds)
-        scrim.backgroundColor = UIColor.black.withAlphaComponent(0.28)
+        let scrim = UIControl(frame: foreground.bounds)
+        scrim.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        scrim.backgroundColor = UIColor.black.withAlphaComponent(dark ? 0.16 : 0.06)
         scrim.accessibilityLabel = "关闭导航"
         scrim.addTarget(self, action: #selector(dismissSidebar193), for: .touchUpInside)
-        overlay.addSubview(scrim)
-        let surface = UIVisualEffectView(effect: UIBlurEffect(style: { if #available(iOS 13, *) { return .systemThickMaterial }; return .regular }()))
-        surface.layer.cornerRadius = 24
-        surface.clipsToBounds = true
+        let surface = UIView(frame: CGRect(x: 0, y: 0, width: drawerWidth193, height: view.bounds.height))
+        surface.backgroundColor = Theme.background(dark)
         overlay.addSubview(surface)
+        view.insertSubview(overlay, belowSubview: foreground)
         let scroll = UIScrollView()
+        scroll.contentInsetAdjustmentBehavior = .never
         let stack = UIStackView()
+        let settings = UIButton(type: .system)
+        settings.translatesAutoresizingMaskIntoConstraints = false
+        settings.tag = sidebarRows193.count - 1
+        settings.tintColor = Theme.text(dark)
+        settings.setTitle(Strings.settings, for: .normal)
+        if #available(iOS 13, *) { settings.setImage(UIImage(systemName: "gearshape"), for: .normal) }
+        settings.addTarget(self, action: #selector(selectSidebar193(_:)), for: .touchUpInside)
         stack.axis = .vertical
         stack.spacing = 6
         scroll.translatesAutoresizingMaskIntoConstraints = false
         stack.translatesAutoresizingMaskIntoConstraints = false
-        surface.contentView.addSubview(scroll)
+        surface.addSubview(scroll)
+        surface.addSubview(settings)
         scroll.addSubview(stack)
         NSLayoutConstraint.activate([
-            scroll.leadingAnchor.constraint(equalTo: surface.contentView.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: surface.contentView.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: surface.contentView.topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: surface.contentView.bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: surface.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: surface.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            scroll.bottomAnchor.constraint(equalTo: settings.topAnchor, constant: -8),
+            settings.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: -18),
+            settings.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
+            settings.heightAnchor.constraint(greaterThanOrEqualToConstant: 48),
             stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 14),
             stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -14),
             stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 12),
@@ -499,19 +541,20 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         header.font = .preferredFont(forTextStyle: .title2)
         header.adjustsFontForContentSizeCategory = true
         stack.addArrangedSubview(header)
-        for (index, row) in sidebarRows193.enumerated() {
+        for (index, row) in sidebarRows193.dropLast().enumerated() {
             let button = UIButton(type: .system)
             button.tag = index
             button.setTitle("  " + row.0, for: .normal)
             if #available(iOS 13, *) { button.setImage(UIImage(systemName: row.1), for: .normal) }
             button.contentHorizontalAlignment = .leading
+            button.tintColor = Theme.text(dark)
             button.contentEdgeInsets = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
             button.titleLabel?.font = .preferredFont(forTextStyle: .body)
             button.titleLabel?.adjustsFontForContentSizeCategory = true
             button.layer.cornerRadius = 12
             button.heightAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
             if index < pages.count && pages[index].0 == filter {
-                button.backgroundColor = Theme.blue.withAlphaComponent(0.15)
+                button.backgroundColor = Theme.text(dark).withAlphaComponent(0.07)
                 button.accessibilityTraits.insert(.selected)
             }
             button.addTarget(self, action: #selector(selectSidebar193(_:)), for: .touchUpInside)
@@ -519,16 +562,20 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         }
         overlay.accessibilityViewIsModal = true
         sidebar193 = overlay
-        view.addSubview(overlay)
-        view.setNeedsLayout()
-        view.layoutIfNeeded()
+        foreground.addSubview(scrim)
+        drawerDismissControl = scrim
+        for child in foreground.subviews where child !== scrim { child.accessibilityElementsHidden = true }
+        foreground.clipsToBounds = true
+        if #available(iOS 13, *) { foreground.layer.cornerCurve = .continuous }
+        foreground.layer.cornerRadius = 34
         let close = UISwipeGestureRecognizer(target: self, action: #selector(dismissSidebar193))
         close.direction = .left; surface.addGestureRecognizer(close)
+        let closeFromGallery = UISwipeGestureRecognizer(target: self, action: #selector(dismissSidebar193))
+        closeFromGallery.direction = .left; scrim.addGestureRecognizer(closeFromGallery)
         scrim.alpha = 0
-        surface.transform = CGAffineTransform(translationX: -surface.frame.maxX, y: 0)
         UIView.animate(withDuration: sidebarDuration193, delay: 0, options: [.curveEaseOut, .beginFromCurrentState]) {
             scrim.alpha = 1
-            surface.transform = .identity
+            self.foreground.transform = CGAffineTransform(translationX: self.drawerWidth193, y: 0)
         }
         UIAccessibility.post(notification: .screenChanged, argument: header)
     }
@@ -544,11 +591,18 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
     private func closeSidebar193(_ completion: (() -> Void)? = nil) {
         guard let overlay = sidebar193, overlay.isUserInteractionEnabled else { return }
         overlay.isUserInteractionEnabled = false
+        let scrim = drawerDismissControl
         UIView.animate(withDuration: sidebarDuration193, delay: 0, options: [.curveEaseIn, .beginFromCurrentState]) {
-            overlay.alpha = 0
-            overlay.subviews.last?.transform = CGAffineTransform(translationX: -overlay.bounds.width, y: 0)
+            self.foreground.transform = .identity
+            scrim?.alpha = 0
         } completion: { [weak self] _ in
             overlay.removeFromSuperview()
+            scrim?.removeFromSuperview()
+            if let foreground = self?.foreground {
+                foreground.clipsToBounds = false
+                foreground.layer.cornerRadius = 0
+                for child in foreground.subviews { child.accessibilityElementsHidden = false }
+            }
             self?.sidebar193 = nil
             self?.sidebarRows193.removeAll()
             completion?()
@@ -611,8 +665,13 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
             else { button.setTitle(selecting193 ? (index == 0 ? "×" : index == 2 ? "✓" : "•••") : (index == 0 ? "☰" : index == 2 ? "▦" : "↻"), for: .normal) }
         }
         if #available(iOS 15, *), let menuButton = toolbar.arrangedSubviews[2] as? UIButton {
-            if selecting193 { menuButton.menu = nil; menuButton.showsMenuAsPrimaryAction = false }
+            menuButton.accessibilityLabel = selecting193 ? "切换全选" : "排布与显示"
+            if selecting193 {
+                menuButton.menu = nil; menuButton.showsMenuAsPrimaryAction = false
+                menuButton.addTarget(self, action: #selector(chooseMode), for: .touchUpInside)
+            }
             else if menuButton.menu == nil {
+                menuButton.removeTarget(self, action: #selector(chooseMode), for: .touchUpInside)
                 menuButton.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] done in
                     done(self?.displayMenu199() ?? [])
                 }])
@@ -625,7 +684,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         (collectionView.cellForItem(at: indexPath) as? MediaCell)?.selection193(active: true, selected: false); selectionHeader193()
     }
     @available(iOS 13, *)
-    func collectionView(_ collectionView: UICollectionView, shouldBeginMultipleSelectionInteractionAt indexPath: IndexPath) -> Bool { !deleting193 && filter != "star" }
+    func collectionView(_ collectionView: UICollectionView, shouldBeginMultipleSelectionInteractionAt indexPath: IndexPath) -> Bool { selecting193 && !deleting193 && filter != "star" }
     @available(iOS 13, *)
     func collectionView(_ collectionView: UICollectionView, didBeginMultipleSelectionInteractionAt indexPath: IndexPath) { beginSelection193() }
     private func selectionMenu193() {

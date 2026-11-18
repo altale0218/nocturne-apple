@@ -87,7 +87,7 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
             cell.accessoryType = .disclosureIndicator
             cell.selectionStyle = .default
         }
-        if id == "size" { cell.detailTextLabel?.text = [Strings.text("紧凑", "Compact", "コンパクト", "緊湊"), Strings.text("均衡", "Balanced", "標準", "均衡"), Strings.text("较大", "Large", "大きい", "較大"), Strings.text("单列", "Single", "1列", "單列")][p.sizePreset] }
+        if id == "size", let index = GalleryRules122.gallerySizes.firstIndex(of: p.sizePreset) { cell.detailTextLabel?.text = GalleryRules122.gallerySizeTitles[index] }
         if id == "lead" { cell.detailTextLabel?.text = "\(Int(p.markerLead)) s" }
         if id == "markWindow" { cell.detailTextLabel?.text = "\(Int(p.markerWindow)) s" }
         if id == "fine" { cell.detailTextLabel?.text = "\(p.finePixels) pt" }
@@ -132,9 +132,8 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         switch id {
         case "source": choices(id, names: ["全部项目", "本机图库项目", "应用内加密项目"], values: ["all", "local", "encrypted"]) { $0.settings.sourceScope193 = $1 }
         case "size":
-            var names = [Strings.text("紧凑", "Compact", "コンパクト", "緊湊"), Strings.text("均衡", "Balanced", "標準", "均衡"), Strings.text("较大", "Large", "大きい", "較大")], values = ["0", "1", "2"]
-            if view.bounds.width >= 600 { names.append(Strings.text("单列", "Single column", "1列", "單列")); values.append("3") }
-            choices(id, names: names, values: values) { $0.settings.gallerySize122 = Int($1) }
+            let values = GalleryRules122.gallerySizes.map { String($0) }
+            choices(id, names: GalleryRules122.gallerySizeTitles, values: values) { $0.settings.gallerySize122 = Int($1) }
         case "lead": number(id, current: storage.state.settings.markerLead, range: 0...120) { $0.settings.markerLead122 = $1 }
         case "markWindow": number(id, current: storage.state.settings.markerWindow, range: 1...120) { $0.settings.markerWindow122 = $1 }
         case "fine": number(id, current: storage.state.settings.finePixels, range: 1...6) { $0.settings.finePixels122 = $1 }

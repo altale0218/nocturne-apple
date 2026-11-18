@@ -262,13 +262,17 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
     private var nearbyAddresses: [String: String] = [:]
     private var visibleForDiscovery = false
     private let storage: SecureStorage
-    private let album = UIButton(type: .system), pairing = UIButton(type: .system), start = UIButton(type: .system)
-    private let manage = UIButton(type: .system)
-    private let address = UITextField(), androidAlbum = UITextField()
-    private let useAllAndroid = UISwitch()
-    private let androidScopeRow199 = UIStackView()
-    private let direction = UISegmentedControl(items: ["发送到 Android", "接收至 iOS", "双向"])
-    private let useCloud = UISwitch(), status = UILabel()
+    private let pairing = UIButton(type: .system), start = UIButton(type: .system)
+    private let connectDevice = UIButton(type: .system)
+    private let pages = UISegmentedControl(items: ["连接设备", "配对设备"])
+    private var connectionOptions: UIView?
+    private var pairingOptions: UIView?
+    private var syncOptions: UIView?
+    private var verifiedAddress: String?
+    private var canReceiveOrdinaryLibrary = false
+    private var enteredWrongCode = false
+    private let address = UITextField()
+    private let status = UILabel()
     private let syncProgress = UIProgressView(progressViewStyle: .default)
     private let statusCard = UIStackView()
     private let metricsStack = UIStackView()
@@ -281,7 +285,6 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         return formatter
     }()
     private var statusEpoch = 0
-    private var chosen: PhotoSyncLibrary.Album?
     private var job: Task<Void, Never>?
     private var codeReply: CheckedContinuation<Bool, Never>?
     private static var wakeLeases = 0
@@ -299,38 +302,21 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         address.textContentType = nil
         address.keyboardType = .numbersAndPunctuation
         address.autocorrectionType = .no
-        androidAlbum.placeholder = "Android 相册名称"
-        direction.selectedSegmentIndex = 2
-        for field in [address, androidAlbum] {
-            field.borderStyle = .roundedRect
-            field.heightAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
-        }
+        address.borderStyle = .roundedRect
+        address.heightAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
         address.accessibilityLabel = "Android 的局域网 IP 地址"
-        androidAlbum.accessibilityLabel = "Android 相册名称"
-        address.addTarget(self, action: #selector(scopeChanged), for: .editingChanged)
-        androidAlbum.addTarget(self, action: #selector(scopeChanged), for: .editingChanged)
-        direction.accessibilityLabel = "相册同步方向"
-        useAllAndroid.addTarget(self, action: #selector(scopeChanged), for: .valueChanged)
-        direction.addTarget(self, action: #selector(scopeChanged), for: .valueChanged)
-        useCloud.addTarget(self, action: #selector(scopeChanged), for: .valueChanged)
-        album.configuration = Self.action(title: "选择 iOS 相册", symbol: "photo.on.rectangle.angled")
-        album.addTarget(self, action: #selector(choose), for: .touchUpInside)
-        manage.setTitle("管理 iOS 相册内容", for: .normal)
-        manage.addTarget(self, action: #selector(manageAlbum), for: .touchUpInside)
-        manage.isHidden = true
+        address.addTarget(self, action: #selector(addressChanged), for: .editingChanged)
         pairing.configuration = Self.action(title: "配对 Android", symbol: "link")
         pairing.addTarget(self, action: #selector(pair), for: .touchUpInside)
+        connectDevice.configuration = Self.action(title: "连接已配对设备", symbol: "wifi")
+        connectDevice.addTarget(self, action: #selector(verifyConnection), for: .touchUpInside)
+        pages.selectedSegmentIndex = 0
+        pages.addTarget(self, action: #selector(switchDevicePage), for: .valueChanged)
         start.configuration = Self.action(title: "开始同步", symbol: "arrow.left.arrow.right", primary: true)
         start.addTarget(self, action: #selector(run), for: .touchUpInside)
-        for button in [album, manage, pairing, start] {
+        for button in [pairing, connectDevice, start] {
             button.heightAnchor.constraint(greaterThanOrEqualToConstant: 46).isActive = true
         }
-        let cloudLabel = Self.label("允许从 iCloud 下载所选原片", style: .subheadline)
-        useCloud.accessibilityLabel = cloudLabel.text
-        useCloud.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let cloud = UIStackView(arrangedSubviews: [cloudLabel, useCloud])
-        cloud.alignment = .center
-        cloud.spacing = 10
         status.numberOfLines = 0
         status.textColor = .label
         status.font = .preferredFont(forTextStyle: .subheadline)
@@ -345,24 +331,26 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         nearbyDevices.spacing = 8
         let networkHint = Self.label("在 Android 打开「同步设备」。如果热点上没有自动发现，请手动填写 Android 页面显示的局域网 IP。", style: .footnote)
         networkHint.textColor = .secondaryLabel
-        let pairCard = Self.card("连接设备", fields: [nearbyDevices, address, pairing, networkHint])
+        let devices = Self.card("附近设备", fields: [nearbyDevices, address, networkHint])
+        let pairingCard = Self.card("新设备配对", fields: [Self.label("在 Android 打开「同步设备」，并核对 Android 上显示的六位码。", style: .footnote), pairing])
+        let connectionCard = Self.card("已配对设备", fields: [connectDevice])
+        pairingOptions = pairingCard
+        connectionOptions = connectionCard
         refreshNearbyDevices()
         NotificationCenter.default.addObserver(self, selector: #selector(stopDiscovery),
                                                name: UIApplication.didEnterBackgroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(startDiscovery),
                                                name: UIApplication.didBecomeActiveNotification, object: nil)
-        let allAndroidLabel = Self.label("接收 Android 全部普通图库", style: .subheadline)
-        useAllAndroid.accessibilityLabel = allAndroidLabel.text
-        androidScopeRow199.addArrangedSubview(allAndroidLabel); androidScopeRow199.addArrangedSubview(useAllAndroid)
-        androidScopeRow199.alignment = .center; androidScopeRow199.spacing = 10
-        let albumCard = Self.card("同步范围", fields: [album, manage, direction, androidScopeRow199, androidAlbum, cloud])
+        let albumCard = Self.card("同步范围", fields: [
+            Self.label("双向核对全部照片和视频。Android 收到的项目会放入 Nocturne 相册；同步可能从 iCloud 下载原片。不会删除原片。", style: .subheadline)
+        ])
+        syncOptions = albumCard
         let scroll = UIScrollView()
         scroll.keyboardDismissMode = .interactive
-        let stack = UIStackView(arrangedSubviews: [pairCard, albumCard, start, statusCard])
+        let stack = UIStackView(arrangedSubviews: [pages, devices, pairingCard, connectionCard, albumCard, start, statusCard])
         stack.axis = .vertical; stack.spacing = 14
         view.addSubview(scroll); scroll.addSubview(stack)
         scroll.translatesAutoresizingMaskIntoConstraints = false; stack.translatesAutoresizingMaskIntoConstraints = false
-        scopeChanged()
         let preferredWidth = stack.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -36)
         preferredWidth.priority = .defaultHigh
         NSLayoutConstraint.activate([
@@ -380,10 +368,12 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         if let lease = try? storage.resourceLease193(),
            let peer = try? AppleAlbumSession(storage: storage, lease: lease).settings().peer, peer.trusted {
             address.text = peer.address
-            status.text = "已配对 \(peer.name)"
+            status.text = "已配对 \(peer.name)。请先连接设备。"
         } else {
+            pages.selectedSegmentIndex = 1
             status.text = "在 Android 打开「同步设备」，确保两台设备连接同一个局域网。"
         }
+        switchDevicePage()
         NotificationCenter.default.addObserver(self, selector: #selector(cancelActive),
                                                name: UIApplication.didEnterBackgroundNotification, object: nil)
     }
@@ -618,8 +608,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
             button.addAction(UIAction { [weak self] _ in
                 guard let self = self, self.job == nil else { return }
                 self.address.text = ip
-                self.scopeChanged()
-                self.pair()
+                self.addressChanged()
             }, for: .touchUpInside)
             nearbyDevices.addArrangedSubview(button)
         }
@@ -639,7 +628,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
 
     private func setBusy(_ running: Bool) {
         nearbyDevices.isUserInteractionEnabled = !running
-        let controls: [UIControl] = [address, androidAlbum, direction, pairing, album, manage, useCloud, useAllAndroid, start]
+        let controls: [UIControl] = [address, pages, pairing, connectDevice, start]
         controls.forEach { $0.isEnabled = !running }
         navigationController?.isModalInPresentation = running
         navigationItem.leftBarButtonItem = running
@@ -651,92 +640,57 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         }
     }
 
-    @objc private func choose() {
-        guard job == nil else { return }
-        PHPhotoLibrary.requestAuthorization(for: .readWrite) { [weak self] allowed in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                guard PhotoSyncLibrary.allowsReadWrite(allowed) else { self.status.text = "请在系统设置允许访问需要同步的相册。"; return }
-                do {
-                    let library = PhotoSyncLibrary(storage: self.storage)
-                    let lease = try self.storage.resourceLease193()
-                    let albums = try library.albums(lease: lease)
-                    let picker = UIAlertController(title: "选择 iOS 相册", message: allowed == .limited ? "照片同步限于系统已授权范围。若要选择完整图库或更多已有相册，请在系统设置调整照片访问权限。" : nil,
-                                                   preferredStyle: .actionSheet)
-                    for value in [PhotoSyncLibrary.Album.all, .recent] + albums {
-                        picker.addAction(UIAlertAction(title: value.title, style: .default) { _ in
-                            self.selectAlbum(value)
-                        })
-                    }
-                    if allowed == .limited {
-                        picker.addAction(UIAlertAction(title: "打开照片访问设置", style: .default) { _ in
-                            guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
-                            UIApplication.shared.open(url)
-                        })
-                        picker.addAction(UIAlertAction(title: "管理已授权的照片", style: .default) { [weak self] _ in
-                            guard let self = self else { return }
-                            PHPhotoLibrary.shared().presentLimitedLibraryPicker(from: self) { _ in
-                                DispatchQueue.main.async { self.status.text = "照片授权范围已更新，请重新选择同步相册。" }
-                            }
-                        })
-                    }
-                    picker.addAction(UIAlertAction(title: "新建相册", style: .default) { _ in self.createAlbum(library, lease: lease) })
-                    picker.addAction(UIAlertAction(title: "取消", style: .cancel))
-                    picker.popoverPresentationController?.sourceView = self.album
-                    picker.popoverPresentationController?.sourceRect = self.album.bounds
-                    self.present(picker, animated: true)
-                } catch { self.show(error) }
-            }
+    private var enteredAddress: String { address.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" }
+
+    @objc private func switchDevicePage() {
+        let pairingPage = pages.selectedSegmentIndex == 1
+        let connected = verifiedAddress == enteredAddress
+        pairingOptions?.isHidden = !pairingPage
+        connectionOptions?.isHidden = pairingPage
+        syncOptions?.isHidden = pairingPage || !connected
+        start.isHidden = pairingPage || !connected || !canReceiveOrdinaryLibrary
+    }
+
+    @objc private func addressChanged() {
+        if verifiedAddress != enteredAddress {
+            verifiedAddress = nil
+            canReceiveOrdinaryLibrary = false
         }
+        switchDevicePage()
     }
 
-    private func createAlbum(_ library: PhotoSyncLibrary, lease: Int) {
-        let prompt = UIAlertController(title: "新建相册", message: nil, preferredStyle: .alert)
-        prompt.addTextField { $0.placeholder = "相册名称" }
-        prompt.addAction(UIAlertAction(title: "取消", style: .cancel))
-        prompt.addAction(UIAlertAction(title: "创建", style: .default) { [weak self, weak prompt] _ in
-            let name = prompt?.textFields?.first?.text ?? ""
-            self?.task {
-                guard let self = self else { return }
-                let created = try await library.createAlbum(name, lease: lease)
-                self.selectAlbum(created)
-            }
-        })
-        present(prompt, animated: true)
-    }
-
-    @objc private func scopeChanged() {
-        let selected = direction.selectedSegmentIndex
-        androidScopeRow199.isHidden = selected == 0
-        let all = selected != 0 && useAllAndroid.isOn
-        androidAlbum.isHidden = selected == 1 && all
-        androidAlbum.placeholder = all ? "Android 接收相册名称" : "Android 同步相册名称"
-        start.configuration?.title = selected == 0 ? "发送到 Android" : selected == 1 ? "接收至 iOS" : "开始双向同步"
-    }
-
-    private func selectAlbum(_ value: PhotoSyncLibrary.Album) {
-        scopeChanged()
-        chosen = value
-        album.configuration?.title = value.title
-        manage.isHidden = value.isLibraryScope
-        let recentOnly = value.identifier == PhotoSyncLibrary.Album.recent.identifier
-        if recentOnly { direction.selectedSegmentIndex = 0 }
-        direction.isEnabled = !recentOnly
-    }
-
-    @objc private func manageAlbum() {
-        guard let chosen = chosen, !chosen.isLibraryScope, job == nil else { return }
-        do {
-            let lease = try storage.resourceLease193()
-            let library = PhotoSyncLibrary(storage: storage)
-            let controller = AppleAlbumContentsController(library: library, storage: storage, album: chosen, lease: lease)
-            navigationController?.pushViewController(controller, animated: true)
-        } catch { show(error) }
+    @objc private func verifyConnection() {
+        view.endEditing(true)
+        let ip = enteredAddress
+        verifiedAddress = nil
+        canReceiveOrdinaryLibrary = false
+        switchDevicePage()
+        task {
+            let session = AppleAlbumSession(storage: self.storage, lease: try self.storage.resourceLease193())
+            var settings = try session.settings()
+            guard let stored = settings.peer, stored.trusted else { throw AppleSyncTransport.Failure.authentication }
+            self.status.text = "正在连接 \(stored.name)…"
+            let remote = try await AppleSyncTransport.probe(address: ip, pin: stored.pin)
+            guard remote.id == stored.id else { throw AppleSyncTransport.Failure.changedPeer }
+            let peer = try stored.connect(address: ip)
+            let channel = try await AppleSyncTransport.authenticate(peer, local: session.local(settings))
+            await channel.close()
+            try Task.checkCancellation()
+            settings.peer = AppleAlbumSession.StoredPeer(peer, trusted: true)
+            try session.save(settings)
+            self.verifiedAddress = ip
+            self.canReceiveOrdinaryLibrary = remote.supportsOrdinaryLibrary
+            self.status.text = remote.supportsOrdinaryLibrary
+                ? "已连接 \(remote.name)。可以开始双向同步全部项目。"
+                : "已连接，但 Android 版本不支持整库同步。请先更新 Android。"
+            self.switchDevicePage()
+        }
     }
 
     @objc private func pair() {
         view.endEditing(true)
         let ip = address.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        enteredWrongCode = false
         task {
             let session = AppleAlbumSession(storage: self.storage, lease: try self.storage.resourceLease193())
             var settings = try session.settings()
@@ -749,7 +703,10 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
                 settings.peer = AppleAlbumSession.StoredPeer(peer, trusted: trusted)
                 try session.save(settings)
             })
-            self.status.text = "已配对 \(peer.identity.name)"
+            self.verifiedAddress = nil
+            self.pages.selectedSegmentIndex = 0
+            self.switchDevicePage()
+            self.status.text = "已配对 \(peer.identity.name)。请点击「连接已配对设备」。"
         }
     }
 
@@ -770,6 +727,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
             dialog.addAction(UIAlertAction(title: "取消", style: .cancel) { [weak self] _ in self?.replyToCode(false) })
             let connect = UIAlertAction(title: "连接", style: .default) { [weak self, weak dialog] _ in
                 let actual = dialog?.textFields?.first?.text ?? ""
+                self?.enteredWrongCode = actual != expected
                 self?.replyToCode(actual == expected)
             }
             connect.isEnabled = false
@@ -792,27 +750,23 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
     @objc private func run() {
         view.endEditing(true)
         let ip = address.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let target = androidAlbum.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard let selected = chosen else { status.text = "请先选择 iOS 相册或全部图库。"; return }
-        let selectedDirection = selected.identifier == PhotoSyncLibrary.Album.recent.identifier ? 0 : direction.selectedSegmentIndex
-        let allAndroid = selectedDirection != 0 && useAllAndroid.isOn, cloud = useCloud.isOn
-        let needsFolder = selectedDirection != 1 || !allAndroid
-        guard !needsFolder || (!target.isEmpty && target.utf16.count <= 72 && !target.contains("/") &&
-              !target.contains("\\") && target != "." && target != ".." &&
-              target.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) })) else {
-            status.text = allAndroid ? "请填写 Android 接收相册名称。" : "请填写 Android 同步相册名称。"
-            return
-        }
-        scopeChanged()
+        guard verifiedAddress == ip else { status.text = "请先连接已配对设备。"; return }
+        guard canReceiveOrdinaryLibrary else { status.text = "请先更新 Android 至支持整库同步的版本。"; return }
         task(keepsScreenAwake: true) {
             let session = AppleAlbumSession(storage: self.storage, lease: try self.storage.resourceLease193())
             let settings = try session.settings()
             guard let paired = settings.peer, paired.trusted else { throw AppleSyncTransport.Failure.authentication }
             let peer = try paired.connect(address: ip)
+            let authorization = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+            guard authorization == .authorized else {
+                self.status.text = "整库同步需要完整照片权限。请在 iOS 设置中允许 Nocturne 访问全部照片。"
+                return
+            }
+            try Task.checkCancellation()
             let statusEpoch = self.statusEpoch
-            self.status.text = try await session.transfer(peer: peer, local: session.local(settings), album: selected,
-                sendTo: selectedDirection == 1 ? nil : target, receiveFrom: selectedDirection == 0 || allAndroid ? nil : target, receiveAllAndroid: allAndroid,
-                allowICloud: cloud) { [weak self] update in
+            self.status.text = try await session.transfer(peer: peer, local: session.local(settings), album: .all,
+                sendTo: "Nocturne", receiveFrom: nil, receiveAllAndroid: true,
+                allowICloud: true) { [weak self] update in
                     DispatchQueue.main.async {
                         guard let self = self, self.statusEpoch == statusEpoch else { return }
                         self.showTransfer(update)
@@ -846,12 +800,21 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
     private func show(_ error: Error) {
         switch error {
         case AppleSyncTransport.Failure.address: status.text = "请输入同一局域网内 Android 的 IP 地址。"
-        case AppleSyncTransport.Failure.certificate, AppleSyncTransport.Failure.changedPeer: status.text = "Android 设备的身份无法核对，请检查地址或重新配对。"
-        case AppleSyncTransport.Failure.authentication: status.text = "请先配对 Android。"
-        case AppleSyncTransport.Failure.rejected("android-all-version"): status.text = "当前 Android 版本不支持发送全部图库。可先选择指定相册。"
-        case AppleSyncTransport.Failure.rejected("album-version"): status.text = "Android 端需要支持手机相册同步的版本。"
+        case AppleSyncTransport.Failure.certificate, AppleSyncTransport.Failure.changedPeer:
+            verifiedAddress = nil
+            switchDevicePage()
+            status.text = "Android 身份验证未通过。请确认地址属于要连接的设备；若 Android 已更换安装或身份，请手动重新配对。"
+        case AppleSyncTransport.Failure.authentication: status.text = "配对凭证未通过验证。请到「配对设备」重新核对六位码。"
+        case AppleSyncTransport.Failure.rejected("not-android"): status.text = "此地址回应的不是 Android 设备。请检查设备列表或 Android 上显示的地址。"
+        case AppleSyncTransport.Failure.rejected("android-all-version"): status.text = "当前 Android 版本不支持发送全部图库。请先更新 Android。"
+        case AppleSyncTransport.Failure.rejected("album-version"): status.text = "已找到 Android，但该版本不支持跨平台相册同步。请先升级 Android 客户端。"
+        case AppleSyncTransport.Failure.declined where enteredWrongCode:
+            enteredWrongCode = false
+            status.text = "配对码不一致。请重新配对，并输入 Android 当前显示的六位码。"
         case AppleSyncTransport.Failure.declined, MediaError193.cancelled, is CancellationError:
             status.text = "已取消。再次同步时会先核对已接收原片。"
+        case let failure where AppleAlbumSession.canReconnect(failure) && verifiedAddress == nil:
+            status.text = "无法连接 Android。请确认两台设备在同一局域网、iOS 已允许本地网络，并在 Android 打开「同步设备」。"
         case let failure where AppleAlbumSession.canReconnect(failure):
             start.configuration?.title = "继续同步"
             status.text = "连接中断。重新连接同一局域网后，可继续核对并传输剩余原片。"

@@ -124,6 +124,9 @@ final class NativeGlass193: UIVisualEffectView {
     }
     required init?(coder: NSCoder) { super.init(coder: coder); refresh193() }
     @objc private func refresh193() {
+        #if compiler(>=6.2)
+        if #available(iOS 26, *) { cornerConfiguration = .capsule() }
+        #endif
         if UIAccessibility.isReduceTransparencyEnabled {
             effect = nil
             if #available(iOS 13, *) { backgroundColor = .secondarySystemBackground } else { backgroundColor = .white }
@@ -135,6 +138,13 @@ final class NativeGlass193: UIVisualEffectView {
         #endif
         if #available(iOS 13, *) { effect = UIBlurEffect(style: .systemMaterial) } else { effect = UIBlurEffect(style: .light) }
     }
-    override func layoutSubviews() { super.layoutSubviews(); layer.cornerRadius = min(26, bounds.height / 2); if #available(iOS 13, *) { layer.cornerCurve = .continuous } }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        #if compiler(>=6.2)
+        if #available(iOS 26, *) { return }
+        #endif
+        layer.cornerRadius = min(26, bounds.height / 2)
+        if #available(iOS 13, *) { layer.cornerCurve = .continuous }
+    }
     deinit { NotificationCenter.default.removeObserver(self) }
 }

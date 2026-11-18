@@ -41,7 +41,7 @@ struct Preferences: Codable {
     var sourceScope193: String?
     var squareTiles: Bool { squareTiles193 ?? true }
     var roundedSquare: Bool { roundedSquare193 ?? true }
-    var sizePreset: Int { max(0, min(3, gallerySize122 ?? 1)) }
+    var sizePreset: Int { max(0, min(5, gallerySize122 ?? 1)) }
     var markerLead: Double { max(0, min(120, markerLead122 ?? 3)) }
     var markerWindow: Double { max(1, min(120, markerWindow122 ?? 8)) }
     var finePixels: Double { max(1, min(6, finePixels122 ?? 2)) }
@@ -115,7 +115,7 @@ final class SessionClock {
     }
 }
 enum Release {
-    static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.5.19"
+    static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.5.20"
     static var notes: String { "Nocturne \(version) · Apple 开发预览\n\n同一局域网的连接暂时中断时，在已确认的相册范围内重新连接原配对设备。同步期间继续显示相册总容量和核对进度，传输速度会随实际数据调整。\n\n继续逐一核验原片和动态照片资源。相册访问、iCloud 下载与删除仍各自需要用户授权。" }
 }
 enum Strings {
@@ -132,10 +132,17 @@ enum Strings {
 
 // Pure rules shared by layout, ranking and tests; no screen-size assumptions.
 enum GalleryRules122 {
+    static let gallerySizes = [4, 5, 0, 1, 2, 3]
+    static var gallerySizeTitles: [String] {
+        [Strings.text("细密", "Dense", "高密度", "細密"), Strings.text("较小", "Small", "小さい", "較小"),
+         Strings.text("紧凑", "Compact", "コンパクト", "緊湊"), Strings.text("均衡", "Balanced", "標準", "均衡"),
+         Strings.text("大图", "Large", "大きい", "大圖"), Strings.text("单列", "Single column", "1列", "單列")]
+    }
     static func columns(width: Double, preset: Int) -> Int {
-        let balanced = max(1, Int((max(1, width) / 180).rounded()))
-        let value = preset == 3 ? 1 : balanced + (preset == 0 ? 1 : preset == 2 ? -1 : 0)
-        return max(1, min(8, value))
+        let offsets = [2, 1, 0, -1, -2]
+        guard let index = gallerySizes.firstIndex(of: preset), index < offsets.count else { return 1 }
+        let balanced = max(4, Int((max(1, width) / 120).rounded()))
+        return max(2, min(12, balanced + offsets[index]))
     }
     static func rowCount(remaining: Int, columns: Int) -> Int {
         guard remaining > 0 else { return 0 }

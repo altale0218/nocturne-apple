@@ -18,8 +18,9 @@ enum AppleSyncTransport {
         let id: String
         let name: String
         let pin: String
+        let supportsOrdinaryLibrary: Bool
 
-        init(id: String, name: String, pin: String) throws {
+        init(id: String, name: String, pin: String, supportsOrdinaryLibrary: Bool = false) throws {
             guard AppleSyncTransport.isHex(id, length: 32), AppleSyncTransport.isHex(pin, length: 64),
                   !name.isEmpty, name.utf16.count <= 80,
                   name.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) })
@@ -27,6 +28,7 @@ enum AppleSyncTransport {
             self.id = id
             self.name = name
             self.pin = pin
+            self.supportsOrdinaryLibrary = supportsOrdinaryLibrary
         }
     }
 
@@ -42,14 +44,14 @@ enum AppleSyncTransport {
         catch { connection.cancel(); throw error }
     }
 
-    static func probe(address: String) async throws -> Identity {
-        let socket = try await connect(address: address, pin: nil)
+    static func probe(address: String, pin: String? = nil) async throws -> Identity {
+        let socket = try await connect(address: address, pin: pin)
         defer { socket.cancel() }
         try await socket.writeControl(["op": "probe173"])
         let reply = try await socket.readControl("probe173")
         let identity = try identity(reply)
-        guard reply["platform195"] as? String == "android",
-              identity.pin == socket.serverPin else { throw Failure.certificate }
+        guard identity.pin == socket.serverPin else { throw Failure.certificate }
+        guard reply["platform195"] as? String == "android" else { throw Failure.rejected("not-android") }
         guard reply["mobileAlbum1"] as? Bool == true else { throw Failure.rejected("album-version") }
         return identity
     }
@@ -151,7 +153,7 @@ enum AppleSyncTransport {
     private static func identity(_ value: [String: Any]) throws -> Identity {
         guard let id = value["id"] as? String, let name = value["name"] as? String,
               let pin = value["pin"] as? String else { throw Failure.malformed }
-        return try Identity(id: id, name: name, pin: pin)
+        return try Identity(id: id, name: name, pin: pin, supportsOrdinaryLibrary: value["mobileAlbumAll1"] as? Bool == true)
     }
 
     static func isHex(_ value: String, length: Int) -> Bool {
@@ -398,8 +400,11 @@ enum AppleSyncTransport {
                     guard SecTrustSetNetworkFetchAllowed(trust, false) == errSecSuccess else { complete(false); return }
                     chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate] ?? []
                 }
-                guard let actual = AppleSyncTransport.verifiedPeerPin(chain, expected: pin)
-                      else { complete(false); return }
+                guard let actual = AppleSyncTransport.verifiedPeerPin(chain, expected: pin) else {
+                    certificate.reject()
+                    complete(false)
+                    return
+                }
                 certificate.set(actual)
                 complete(true)
             }, queue)
@@ -425,7 +430,8 @@ enum AppleSyncTransport {
                             case .failed(let error):
                                 deadline.cancel()
                                 self.connection.stateUpdateHandler = nil
-                                continuation.resume(throwing: error)
+                                if self.tlsState.wasRejected() { continuation.resume(throwing: Failure.certificate) }
+                                else { continuation.resume(throwing: error) }
                             case .cancelled:
                                 deadline.cancel()
                                 self.connection.stateUpdateHandler = nil
@@ -506,8 +512,11 @@ enum AppleSyncTransport {
     private final class PeerCertificate {
         private let lock = NSLock()
         private var pin: String?
+        private var rejected = false
         func read() -> String? { lock.lock(); defer { lock.unlock() }; return pin }
         func set(_ value: String) { lock.lock(); defer { lock.unlock() }; pin = value }
+        func reject() { lock.lock(); defer { lock.unlock() }; rejected = true }
+        func wasRejected() -> Bool { lock.lock(); defer { lock.unlock() }; return rejected }
     }
 }
 

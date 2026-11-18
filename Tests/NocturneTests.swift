@@ -573,10 +573,10 @@ final class NocturneTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: cache.path)); XCTAssertEqual(try Data(contentsOf: original), Data([8, 9])); XCTAssertEqual(storage.state.cacheVersions.count, 3)
     }
     func testPresetColumnsAndOrphanRows() {
-        XCTAssertEqual(GalleryRules122.columns(width: 336, preset: 1), 2)
-        XCTAssertEqual(GalleryRules122.columns(width: 336, preset: 0), 3)
-        XCTAssertEqual(GalleryRules122.columns(width: 336, preset: 2), 1)
-        XCTAssertEqual(GalleryRules122.columns(width: 780, preset: 1), 4)
+        let phone = GalleryRules122.gallerySizes.map { GalleryRules122.columns(width: 336, preset: $0) }
+        XCTAssertEqual(phone, [6, 5, 4, 3, 2, 1])
+        XCTAssertGreaterThan(GalleryRules122.columns(width: 780, preset: 1), phone[3])
+        XCTAssertEqual(GalleryRules122.columns(width: 780, preset: 3), 1)
         XCTAssertEqual(GalleryRules122.rowCount(remaining: 3, columns: 2), 3)
         XCTAssertEqual(GalleryRules122.rowCount(remaining: 5, columns: 4), 3)
     }
