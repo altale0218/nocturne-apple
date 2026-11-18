@@ -974,6 +974,13 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
             canReceiveOrdinaryLibrary = false
             switchDevicePage()
             status.text = "配对凭证未通过验证。请到「配对设备」重新核对六位码。"
+        case AppleSyncTransport.Failure.rejected("pair-busy"): status.text = "Android 正在处理另一次配对，请结束那次配对再试。"
+        case AppleSyncTransport.Failure.rejected("pair-rate"): status.text = "Android 已限制短时间内的配对尝试，请等五分钟再试。"
+        case AppleSyncTransport.Failure.rejected("pair-identity"): status.text = "Android 拒绝了配对身份或配对记录已满。"
+        case AppleSyncTransport.Failure.rejected("pair-challenge"): status.text = "Android 拒绝了本次配对校验。"
+        case AppleSyncTransport.Failure.rejected("pair-declined"): status.text = "Android 未确认此次配对。"
+        case AppleSyncTransport.Failure.rejected("pair-timeout"): status.text = "Android 等待配对响应超时。"
+        case AppleSyncTransport.Failure.rejected("pair-failed"): status.text = "Android 已收到请求，但无法完成配对。"
         case AppleSyncTransport.Failure.rejected("not-android"): status.text = "此地址回应的不是 Android 设备。请检查设备列表或 Android 上显示的地址。"
         case AppleSyncTransport.Failure.rejected("android-all-version"): status.text = "当前 Android 版本不支持发送全部图库。请先更新 Android。"
         case AppleSyncTransport.Failure.rejected("album-version"): status.text = "已找到 Android，但该版本不支持跨平台相册同步。请先升级 Android 客户端。"

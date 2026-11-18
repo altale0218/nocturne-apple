@@ -509,7 +509,8 @@ enum AppleSyncTransport {
             let value = try decodeObject(try await receive(count))
             guard value["schema"] as? Int == 173 else { throw Failure.malformed }
             if let rejected = value["error"] as? String,
-               ["mode173", "consent173", "automatic173"].contains(rejected) {
+               ["mode173", "consent173", "automatic173", "pair-busy", "pair-rate", "pair-identity",
+                "pair-challenge", "pair-declined", "pair-timeout", "pair-failed"].contains(rejected) {
                 throw Failure.rejected(rejected)
             }
             guard value["op"] as? String == operation else { throw Failure.malformed }
