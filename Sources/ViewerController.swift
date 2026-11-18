@@ -55,8 +55,8 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
     private var lastStripFling: CFTimeInterval = 0
     private var lastStripDirection: CGFloat = 0
     private var stripFlingBoost: CGFloat = 1
-    private let stripItemWidth: CGFloat = 48
-    private let stripSpacing: CGFloat = 5
+    private let stripItemWidth: CGFloat = 40
+    private let stripSpacing: CGFloat = 4
     var addPrivate199: ((UIViewController, MediaAsset193) -> Void)?
     var openingFrame199: CGRect?
     var openingImage199: UIImage?
@@ -712,14 +712,14 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
     func scrollViewWillEndDragging(_ scrollView: UIScrollView, withVelocity velocity: CGPoint,
                                    targetContentOffset: UnsafeMutablePointer<CGPoint>) {
         guard scrollView === strip, !storage.state.settings.reducedMotion, !UIAccessibility.isReduceMotionEnabled,
-              abs(velocity.x) >= 0.45, assets.count > 1 else { return }
+              abs(velocity.x) >= 0.22, assets.count > 1 else { return }
         let now = CACurrentMediaTime()
         let sign: CGFloat = velocity.x < 0 ? -1 : 1
-        stripFlingBoost = now - lastStripFling < 0.7 && sign == lastStripDirection ? min(2.4, stripFlingBoost + 0.45) : 1
+        stripFlingBoost = now - lastStripFling < 0.7 && sign == lastStripDirection ? min(2.8, stripFlingBoost + 0.55) : 1
         lastStripDirection = sign
         lastStripFling = now
         let step = stripItemWidth + stripSpacing
-        let additional = min(16 * step, abs(velocity.x) * step * stripFlingBoost)
+        let additional = min(24 * step, abs(velocity.x) * step * 1.5 * stripFlingBoost)
         let projected = (targetContentOffset.pointee.x + sign * additional) / step
         targetContentOffset.pointee.x = min(CGFloat(assets.count - 1), max(0, projected.rounded())) * step
     }
