@@ -304,6 +304,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
     private var pairingOptions: UIView?
     private var syncOptions: UIView?
     private var verifiedAddress: String?
+    private var pairingStep: String?
     private var canReceiveOrdinaryLibrary = false
     private var enteredWrongCode = false
     private let address = UITextField()
@@ -804,8 +805,14 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         task {
             let session = AppleAlbumSession(storage: self.storage, lease: try self.storage.resourceLease193())
             var settings = try session.settings()
-            self.status.text = "正在核对 Android 设备身份…"
-            let remote = try await AppleSyncTransport.probe(address: ip)
+            self.pairingStep = "连接 Android（TCP / TLS）"
+            self.status.text = "正在连接 Android…"
+            let remote = try await AppleSyncTransport.probe(address: ip, onSecureConnection: {
+                self.pairingStep = "读取 Android 设备身份"
+                self.status.text = "安全连接已建立，正在读取设备身份…"
+            })
+            self.pairingStep = "等待 Android 显示六位码"
+            self.status.text = "设备身份已核对，正在请求配对码…"
             let local = try session.local(settings)
             let peer = try await AppleSyncTransport.pair(address: ip, remote: remote, local: local, confirm: { name, code in
                 await self.enterCode(name: name, expected: code)
@@ -825,6 +832,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
             codeReply = reply
             let dialog = UIAlertController(title: "输入同步连接码", message: "请输入 \(name) 上显示的六位数字。",
                                            preferredStyle: .alert)
+            pairingStep = "确认六位码并保存配对"
             status.text = "等待确认配对码。"
             dialog.addTextField {
                 $0.keyboardType = .numberPad
@@ -905,6 +913,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
                     if Self.wakeLeases == 0 { UIApplication.shared.isIdleTimerDisabled = Self.previousIdleTimer }
                 }
                 self.job = nil
+                self.pairingStep = nil
                 self.setBusy(false)
             }
             do {
@@ -923,10 +932,24 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
     }
 
     private func show(_ error: Error) {
-        if pages.selectedSegmentIndex == 1, let network = error as? NWError {
+        if let step = pairingStep {
+            let reason: String?
+            switch error {
+            case AppleSyncTransport.Failure.closed: reason = "连接被对方或网络关闭"
+            case AppleSyncTransport.Failure.timeout: reason = "连接超时"
+            case AppleSyncTransport.Failure.malformed: reason = "收到的协议响应无法解析"
+            case AppleSyncTransport.Failure.certificate: reason = "证书或设备指纹未通过校验"
+            default: reason = nil
+            }
+            if let reason = reason {
+                status.text = "\(step)失败：\(reason)。"
+                return
+            }
+        }
+        if let step = pairingStep, let network = error as? NWError {
             switch network {
             case .posix(let code):
-                status.text = "配对连接失败（网络错误 \(code.rawValue)）。在 iPhone 的 Wi‑Fi 详情核对路由器地址，并与 Android 热点地址比较。"
+                status.text = "\(step)失败（网络错误 \(code.rawValue)）。在 iPhone 的 Wi‑Fi 详情核对路由器地址，并与 Android 热点地址比较。"
             case .tls(let code):
                 status.text = "已到达安全握手阶段，但 TLS 未完成（\(code)）。"
             case .dns(let code):

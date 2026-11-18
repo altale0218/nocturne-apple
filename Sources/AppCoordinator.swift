@@ -84,8 +84,8 @@ final class AppCoordinator {
                 catch { storage.lock(); DispatchQueue.main.async { controller?.busy(false); controller?.status193("生物识别未完成或授权已失效，请使用密码。") } }
             }
         }
-        if #available(iOS 13, *) { controller.isModalInPresentation = true }
-        controller.modalPresentationStyle = .fullScreen; presenter.present(controller, animated: true)
+        controller.configureSlide()
+        presenter.present(controller, animated: true)
         if storage.exportCleanupPending193 > 0 { controller.loadViewIfNeeded(); controller.status193("上次移出的受保护临时原件尚待清理，新的移出操作已暂停。") }
     }
     private func switchLibrary193(_ target: SecureStorage) {
@@ -252,6 +252,14 @@ final class AppCoordinator {
     }
 }
 final class LandingController: UIViewController {
+    private let slide = GalleryPageSlide()
+    private var verifying = false
+
+    func configureSlide() {
+        slide.configure(self)
+        slide.installEdge(on: self) { [weak self] in self?.verifying == false }
+    }
+
     let privateMode: Bool
     let biometricEnabled193: Bool
     var biometricOpen193: (() -> Void)?
@@ -316,6 +324,6 @@ final class LandingController: UIViewController {
         }
         alert.addAction(UIAlertAction(title: Strings.cancel, style: .cancel)); alert.popoverPresentationController?.sourceView = buttons.last; alert.popoverPresentationController?.sourceRect = buttons.last?.bounds ?? .zero; present(alert, animated: true)
     }
-    func busy(_ value: Bool) { buttons.forEach { $0.isEnabled = !value }; status.text = value ? Strings.text("正在验证…", "Verifying…", "確認中…", "正在驗證…") : "" }
+    func busy(_ value: Bool) { verifying = value; buttons.forEach { $0.isEnabled = !value }; status.text = value ? Strings.text("正在验证…", "Verifying…", "確認中…", "正在驗證…") : "" }
     func error() { status.text = Strings.text("密码不正确，或新密码不足 10 位且两次不一致。", "Password incorrect, or a new password needs at least 10 matching characters.", "パスワードが違うか、新規パスワードが10文字未満または一致していません。", "密碼不正確，或新密碼不足10位且兩次不一致。") }
 }

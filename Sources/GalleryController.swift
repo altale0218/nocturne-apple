@@ -541,7 +541,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
                 let controller = PrivateDuplicateList204(groups: groups, gallery: self, lease: lease)
                 let navigation = GallerySubpageNavigation(rootViewController: controller)
                 if #available(iOS 13, *) { navigation.overrideUserInterfaceStyle = self.dark ? .dark : .light }
-                navigation.modalPresentationStyle = .fullScreen; navigation.modalTransitionStyle = .crossDissolve; self.present(navigation, animated: true)
+                self.present(navigation, animated: true)
             }
         }
     }
@@ -593,12 +593,12 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
                     let controller = AppleAlbumContentsController(library: PhotoSyncLibrary(storage: self.storage),
                         storage: self.storage, album: .all, lease: lease, scanOnOpen: true)
                     let navigation = GallerySubpageNavigation(rootViewController: controller)
-                    navigation.modalPresentationStyle = .fullScreen; navigation.modalTransitionStyle = .crossDissolve; self.present(navigation, animated: true)
+                    self.present(navigation, animated: true)
                 }
             }))
             sidebarRows193.append(("手机相册同步", "iphone.and.arrow.forward", { [weak self] in
                 guard let self = self else { return }
-                let navigation = GallerySubpageNavigation(rootViewController: AppleAlbumSyncController(storage: self.storage)); navigation.modalPresentationStyle = .fullScreen; navigation.modalTransitionStyle = .crossDissolve; self.present(navigation, animated: true)
+                let navigation = GallerySubpageNavigation(rootViewController: AppleAlbumSyncController(storage: self.storage)); self.present(navigation, animated: true)
             }))
             #endif
         }
@@ -624,7 +624,16 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         settings.accessibilityLabel = Strings.settings
         settings.backgroundColor = Theme.text(dark).withAlphaComponent(0.09)
         settings.layer.cornerRadius = 24
-        settings.clipsToBounds = true
+        #if compiler(>=6.2)
+        if #available(iOS 26, *) {
+            var style = UIButton.Configuration.glass()
+            style.image = UIImage(systemName: "gearshape")
+            style.cornerStyle = .capsule
+            style.baseForegroundColor = Theme.text(dark)
+            settings.configuration = style
+            settings.backgroundColor = .clear
+        }
+        #endif
         if #available(iOS 13, *) { settings.setImage(UIImage(systemName: "gearshape"), for: .normal) }
         settings.addTarget(self, action: #selector(selectSidebar193(_:)), for: .touchUpInside)
         stack.axis = .vertical
@@ -704,7 +713,11 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
     @objc private func dismissSidebar193() { closeSidebar193() }
     @objc private func selectSidebar193(_ sender: UIButton) {
         guard sidebarRows193.indices.contains(sender.tag) else { return }
-        closeSidebar193(sidebarRows193[sender.tag].2)
+        let row = sidebarRows193[sender.tag]
+        switch row.1 {
+        case "gearshape", "iphone.and.arrow.forward", "square.on.square", "lock.shield": row.2()
+        default: closeSidebar193(row.2)
+        }
     }
     private func closeSidebar193(_ completion: (() -> Void)? = nil) {
         guard let overlay = sidebar193, overlay.isUserInteractionEnabled else { return }
@@ -731,7 +744,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         let settings = SettingsController(storage: storage)
         settings.changed = { [weak self] in self?.applyTheme(); self?.reload() }
         settings.modeChanged = storage.envelope.privateMode ? locked : openPrivate193
-        let navigation = GallerySubpageNavigation(rootViewController: settings); navigation.modalPresentationStyle = .fullScreen; navigation.modalTransitionStyle = .crossDissolve
+        let navigation = GallerySubpageNavigation(rootViewController: settings)
         present(navigation, animated: true)
         navigation.presentationController?.delegate = settings
     }
@@ -937,26 +950,111 @@ private final class PrivateDuplicateList204: UITableViewController {
 }
 
 
-/// Full-screen subpages use their existing close action for a left-edge return.
-private final class GallerySubpageNavigation: UINavigationController, UIGestureRecognizerDelegate {
+/// Keep the drawer underneath the full-screen page throughout presentation and return.
+private final class GallerySubpageNavigation: UINavigationController {
+    private let slide = GalleryPageSlide()
     override func viewDidLoad() {
         super.viewDidLoad()
+        slide.installEdge(on: self) { [weak self] in
+            self?.viewControllers.count == 1
+        }
+    }
+
+    override init(rootViewController: UIViewController) {
+        super.init(rootViewController: rootViewController)
+        slide.configure(self)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+}
+
+final class GalleryPageSlide: NSObject, UIViewControllerTransitioningDelegate, UIGestureRecognizerDelegate {
+    private weak var page: UIViewController?
+    private var canReturn: (() -> Bool)?
+    private var driver: UIPercentDrivenInteractiveTransition?
+
+    func configure(_ page: UIViewController) {
+        page.modalPresentationStyle = .overFullScreen
+        page.transitioningDelegate = self
+    }
+
+    func installEdge(on page: UIViewController, canReturn: @escaping () -> Bool) {
+        self.page = page
+        self.canReturn = canReturn
         let edge = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(returnFromEdge(_:)))
         edge.edges = .left
         edge.delegate = self
-        view.addGestureRecognizer(edge)
+        page.view.addGestureRecognizer(edge)
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        viewControllers.count == 1 && !isModalInPresentation && presentedViewController == nil
+        guard let page = page, page.presentedViewController == nil, canReturn?() == true else { return false }
+        if #available(iOS 13, *), page.isModalInPresentation { return false }
+        return driver == nil && !page.isBeingPresented && !page.isBeingDismissed
     }
 
     @objc private func returnFromEdge(_ gesture: UIScreenEdgePanGestureRecognizer) {
-        guard gesture.state == .ended, !isModalInPresentation,
-              gesture.translation(in: view).x > 45,
-              let nav = topViewController?.navigationItem,
-              let item = nav.leftBarButtonItem ?? nav.rightBarButtonItem,
-              item.isEnabled, let action = item.action else { return }
-        UIApplication.shared.sendAction(action, to: item.target, from: item, for: nil)
+        guard let page = page else { return }
+        let width = max(1, page.view.bounds.width)
+        let offset = gesture.translation(in: page.view.superview).x
+        let progress = min(1, max(0, offset / width))
+        switch gesture.state {
+        case .began:
+            let transition = UIPercentDrivenInteractiveTransition()
+            transition.completionCurve = .easeOut
+            driver = transition
+            page.dismiss(animated: true)
+        case .changed: driver?.update(progress)
+        case .ended:
+            let velocity = gesture.velocity(in: page.view.superview).x
+            if progress > 0.35 || (progress > 0.08 && velocity > 550) { driver?.finish() }
+            else { driver?.cancel() }
+            driver = nil
+        case .cancelled, .failed:
+            driver?.cancel()
+            driver = nil
+        default: break
+        }
+    }
+
+    func interactionControllerForDismissal(using animator: UIViewControllerAnimatedTransitioning) -> UIViewControllerInteractiveTransitioning? { driver }
+
+    func animationController(forPresented presented: UIViewController, presenting: UIViewController,
+                             source: UIViewController) -> UIViewControllerAnimatedTransitioning? {
+        SlideAnimator(entering: true)
+    }
+
+    func animationController(forDismissed dismissed: UIViewController) -> UIViewControllerAnimatedTransitioning? {
+        SlideAnimator(entering: false)
+    }
+
+    private final class SlideAnimator: NSObject, UIViewControllerAnimatedTransitioning {
+        let entering: Bool
+        init(entering: Bool) { self.entering = entering }
+        func transitionDuration(using context: UIViewControllerContextTransitioning?) -> TimeInterval {
+            UIAccessibility.isReduceMotionEnabled && context?.isInteractive != true ? 0 : 0.33
+        }
+        func animateTransition(using context: UIViewControllerContextTransitioning) {
+            let key: UITransitionContextViewKey = entering ? .to : .from
+            guard let moving = context.view(forKey: key) else { context.completeTransition(false); return }
+            let container = context.containerView
+            let width = container.bounds.width
+            if entering {
+                if let destination = context.viewController(forKey: .to) { moving.frame = context.finalFrame(for: destination) }
+                container.addSubview(moving)
+            }
+            let resting = moving.frame
+            let outside = resting.offsetBy(dx: width, dy: 0)
+            if entering { moving.frame = outside }
+            UIView.animate(withDuration: transitionDuration(using: context), delay: 0,
+                           options: context.isInteractive ? .curveLinear : .curveEaseOut) {
+                moving.frame = self.entering ? resting : outside
+            } completion: { _ in
+                let cancelled = context.transitionWasCancelled
+                if (!self.entering && !cancelled) || (self.entering && cancelled) { moving.removeFromSuperview() }
+                moving.frame = resting
+                context.completeTransition(!cancelled)
+            }
+        }
     }
 }

@@ -47,9 +47,11 @@ enum AppleSyncTransport {
         catch { connection.cancel(); throw error }
     }
 
-    static func probe(address: String, pin: String? = nil) async throws -> Identity {
+    static func probe(address: String, pin: String? = nil,
+                      onSecureConnection: () -> Void = {}) async throws -> Identity {
         let socket = try await connect(address: address, pin: pin)
         defer { socket.cancel() }
+        onSecureConnection()
         try await socket.writeControl(["op": "probe173"])
         let reply = try await socket.readControl("probe173")
         let identity = try identity(reply)
@@ -424,7 +426,11 @@ enum AppleSyncTransport {
                 try Task.checkCancellation()
                 try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                     queue.async {
-                        let deadline = DispatchWorkItem { self.connection.cancel() }
+                        var timedOut = false
+                        let deadline = DispatchWorkItem {
+                            timedOut = true
+                            self.connection.cancel()
+                        }
                         self.connection.stateUpdateHandler = { state in
                             switch state {
                             case .ready:
@@ -439,7 +445,7 @@ enum AppleSyncTransport {
                             case .cancelled:
                                 deadline.cancel()
                                 self.connection.stateUpdateHandler = nil
-                                continuation.resume(throwing: Failure.closed)
+                                continuation.resume(throwing: timedOut ? Failure.timeout : Failure.closed)
                             default: break
                             }
                         }
