@@ -229,25 +229,20 @@ final class AppCoordinator {
         let shape = UIView(frame: overlay.bounds)
         shape.backgroundColor = UIColor(red: 1, green: 0.988, blue: 0.949, alpha: 1)
         shape.clipsToBounds = true
-        let icon = UIImageView()
-        if #available(iOS 13, *) { icon.image = UIImage(systemName: opening ? "lock.open.fill" : "lock.fill") }
-        icon.contentMode = .scaleAspectFit
-        icon.tintColor = UIColor(red: 0.243, green: 0.188, blue: 0.047, alpha: 1)
-        icon.frame = CGRect(x: shape.bounds.midX - 18, y: shape.bounds.midY - 18, width: 36, height: 36)
-        icon.autoresizingMask = [.flexibleLeftMargin, .flexibleRightMargin, .flexibleTopMargin, .flexibleBottomMargin]
-        shape.addSubview(icon)
+        if #available(iOS 13, *) { shape.layer.cornerCurve = .continuous }
+        overlay.isUserInteractionEnabled = false
         overlay.addSubview(gold)
         overlay.addSubview(shape)
         window.addSubview(overlay)
         privateTransition = overlay
         let compact = CGRect(x: overlay.bounds.midX - 36, y: overlay.bounds.midY - 36, width: 72, height: 72)
         if opening { shape.frame = compact; shape.layer.cornerRadius = 36 }
-        UIView.animate(withDuration: 0.30, delay: 0, options: [.curveEaseInOut]) {
+        UIView.animate(withDuration: 0.47, delay: 0, options: [.curveEaseInOut]) {
             shape.frame = opening ? overlay.bounds : compact
             shape.layer.cornerRadius = opening ? 0 : 36
         } completion: { [weak self, weak overlay] _ in
             guard let overlay = overlay, self?.privateTransition === overlay else { return }
-            UIView.animate(withDuration: 0.20, delay: 0, options: [.curveEaseOut]) {
+            UIView.animate(withDuration: 0.29, delay: 0, options: [.curveEaseOut]) {
                 overlay.alpha = 0
             } completion: { [weak self] _ in
                 overlay.removeFromSuperview()

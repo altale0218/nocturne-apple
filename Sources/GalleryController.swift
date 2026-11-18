@@ -539,7 +539,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
                 guard let self = self, self.view.window != nil, self.presentedViewController == nil,
                       (try? self.storage.validateResourceLease193(lease)) != nil else { return }
                 let controller = PrivateDuplicateList204(groups: groups, gallery: self, lease: lease)
-                let navigation = UINavigationController(rootViewController: controller)
+                let navigation = GallerySubpageNavigation(rootViewController: controller)
                 if #available(iOS 13, *) { navigation.overrideUserInterfaceStyle = self.dark ? .dark : .light }
                 navigation.modalPresentationStyle = .fullScreen; navigation.modalTransitionStyle = .crossDissolve; self.present(navigation, animated: true)
             }
@@ -592,14 +592,13 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
                     guard allowed else { self.permissionNotice(); return }
                     let controller = AppleAlbumContentsController(library: PhotoSyncLibrary(storage: self.storage),
                         storage: self.storage, album: .all, lease: lease, scanOnOpen: true)
-                    let navigation = UINavigationController(rootViewController: controller)
-                    navigation.isModalInPresentation = true
+                    let navigation = GallerySubpageNavigation(rootViewController: controller)
                     navigation.modalPresentationStyle = .fullScreen; navigation.modalTransitionStyle = .crossDissolve; self.present(navigation, animated: true)
                 }
             }))
             sidebarRows193.append(("手机相册同步", "iphone.and.arrow.forward", { [weak self] in
                 guard let self = self else { return }
-                let navigation = UINavigationController(rootViewController: AppleAlbumSyncController(storage: self.storage)); navigation.modalPresentationStyle = .fullScreen; navigation.modalTransitionStyle = .crossDissolve; self.present(navigation, animated: true)
+                let navigation = GallerySubpageNavigation(rootViewController: AppleAlbumSyncController(storage: self.storage)); navigation.modalPresentationStyle = .fullScreen; navigation.modalTransitionStyle = .crossDissolve; self.present(navigation, animated: true)
             }))
             #endif
         }
@@ -622,7 +621,10 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         settings.translatesAutoresizingMaskIntoConstraints = false
         settings.tag = sidebarRows193.count - 1
         settings.tintColor = Theme.text(dark)
-        settings.setTitle(Strings.settings, for: .normal)
+        settings.accessibilityLabel = Strings.settings
+        settings.backgroundColor = Theme.text(dark).withAlphaComponent(0.09)
+        settings.layer.cornerRadius = 24
+        settings.clipsToBounds = true
         if #available(iOS 13, *) { settings.setImage(UIImage(systemName: "gearshape"), for: .normal) }
         settings.addTarget(self, action: #selector(selectSidebar193(_:)), for: .touchUpInside)
         stack.axis = .vertical
@@ -639,7 +641,8 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
             scroll.bottomAnchor.constraint(equalTo: settings.topAnchor, constant: -8),
             settings.trailingAnchor.constraint(equalTo: surface.trailingAnchor, constant: -18),
             settings.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
-            settings.heightAnchor.constraint(greaterThanOrEqualToConstant: 48),
+            settings.heightAnchor.constraint(equalToConstant: 48),
+            settings.widthAnchor.constraint(equalToConstant: 48),
             stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 14),
             stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -14),
             stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 12),
@@ -701,9 +704,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
     @objc private func dismissSidebar193() { closeSidebar193() }
     @objc private func selectSidebar193(_ sender: UIButton) {
         guard sidebarRows193.indices.contains(sender.tag) else { return }
-        let action = sidebarRows193[sender.tag].2
-        closeSidebar193()
-        action()
+        closeSidebar193(sidebarRows193[sender.tag].2)
     }
     private func closeSidebar193(_ completion: (() -> Void)? = nil) {
         guard let overlay = sidebar193, overlay.isUserInteractionEnabled else { return }
@@ -730,7 +731,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         let settings = SettingsController(storage: storage)
         settings.changed = { [weak self] in self?.applyTheme(); self?.reload() }
         settings.modeChanged = storage.envelope.privateMode ? locked : openPrivate193
-        let navigation = UINavigationController(rootViewController: settings); navigation.modalPresentationStyle = .fullScreen; navigation.modalTransitionStyle = .crossDissolve
+        let navigation = GallerySubpageNavigation(rootViewController: settings); navigation.modalPresentationStyle = .fullScreen; navigation.modalTransitionStyle = .crossDissolve
         present(navigation, animated: true)
         navigation.presentationController?.delegate = settings
     }
@@ -932,5 +933,30 @@ private final class PrivateDuplicateList204: UITableViewController {
     override func tableView(_ tableView: UITableView, didSelectRowAt path: IndexPath) {
         tableView.deselectRow(at: path, animated: true)
         gallery?.openPrivateDuplicate204(groups[path.section], selected: path.row, lease: lease, from: self)
+    }
+}
+
+
+/// Full-screen subpages use their existing close action for a left-edge return.
+private final class GallerySubpageNavigation: UINavigationController, UIGestureRecognizerDelegate {
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        let edge = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(returnFromEdge(_:)))
+        edge.edges = .left
+        edge.delegate = self
+        view.addGestureRecognizer(edge)
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        viewControllers.count == 1 && !isModalInPresentation && presentedViewController == nil
+    }
+
+    @objc private func returnFromEdge(_ gesture: UIScreenEdgePanGestureRecognizer) {
+        guard gesture.state == .ended, !isModalInPresentation,
+              gesture.translation(in: view).x > 45,
+              let nav = topViewController?.navigationItem,
+              let item = nav.leftBarButtonItem ?? nav.rightBarButtonItem,
+              item.isEnabled, let action = item.action else { return }
+        UIApplication.shared.sendAction(action, to: item.target, from: item, for: nil)
     }
 }
