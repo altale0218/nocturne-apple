@@ -48,6 +48,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
     override func viewDidLoad() {
         super.viewDidLoad()
         view.addSubview(foreground)
+        foreground.isOpaque = true
         foreground.addSubview(background)
         collection = UICollectionView(frame: .zero, collectionViewLayout: layout)
         collection.backgroundColor = .clear; collection.alwaysBounceVertical = true
@@ -127,6 +128,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
     }
     func applyTheme() {
         view.backgroundColor = Theme.background(dark); titleLabel.textColor = Theme.text(dark)
+        foreground.backgroundColor = Theme.background(dark)
         if storage.state.settings.mode.rawValue > 1 { storage.update { $0.settings.mode = .galaxy }; try? storage.save() }
         let p = storage.state.settings; layout.square = p.squareTiles && p.mode == .tiles; layout.mode = p.mode; layout.sizePreset = p.sizePreset; layout.names = false
         if #available(iOS 13, *) { overrideUserInterfaceStyle = p.appearance == .system ? .unspecified : p.appearance == .dark ? .dark : .light }
@@ -632,6 +634,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         scrim.addTarget(self, action: #selector(dismissSidebar193), for: .touchUpInside)
         let surface = UIView(frame: CGRect(x: 0, y: 0, width: drawerWidth193, height: view.bounds.height))
         surface.backgroundColor = Theme.background(dark)
+        surface.clipsToBounds = true
         overlay.addSubview(surface)
         view.insertSubview(overlay, belowSubview: foreground)
         let scroll = UIScrollView()
@@ -1056,8 +1059,14 @@ final class GalleryPageSlide: NSObject, UIViewControllerTransitioningDelegate, U
         case .changed: driver?.update(progress)
         case .ended:
             let velocity = gesture.velocity(in: page.view.superview).x
-            if progress > 0.35 || (progress > 0.08 && velocity > 550) { driver?.finish() }
-            else { driver?.cancel() }
+            let projected = progress + max(0, velocity) * 0.16 / width
+            if progress > 0.30 || (progress > 0.045 && projected > 0.27) {
+                driver?.completionSpeed = min(2.2, max(1.35, velocity / 650))
+                driver?.finish()
+            } else {
+                driver?.completionSpeed = 1.35
+                driver?.cancel()
+            }
             driver = nil
         case .cancelled, .failed:
             driver?.cancel()

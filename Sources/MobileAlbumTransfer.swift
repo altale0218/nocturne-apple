@@ -287,7 +287,7 @@ enum MobileAlbumTransfer {
         try output.synchronize()
     }
 
-    private static func withWaiting<T>(_ channel: Channel, operation: () async throws -> T) async throws -> T {
+    static func withWaiting<T>(_ channel: Channel, operation: () async throws -> T) async throws -> T {
         let timer = Task {
             while !Task.isCancelled {
                 do { try await Task.sleep(nanoseconds: 5_000_000_000) }

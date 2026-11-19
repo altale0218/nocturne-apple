@@ -73,11 +73,30 @@ private struct AppleAlbumSession {
         }
     }
 
+    struct TransferFailure: Error {
+        let stage: String
+        let cause: Error
+        var reason: String {
+            switch cause {
+            case AppleSyncTransport.Failure.timeout: return "对端响应超时"
+            case AppleSyncTransport.Failure.closed: return "对端或网络关闭了连接"
+            case AppleSyncTransport.Failure.malformed, MediaError193.changed, MediaError193.verification:
+                return "报文、原件或回执未通过核验"
+            case MediaError193.unavailable: return "相册或原件不可用"
+            case is PhotoSyncLibrary.CreatedButUnverified: return "系统已写入项目，但原件尚未通过复核"
+            default: return "操作未完成（错误码 \((cause as NSError).code)）"
+            }
+        }
+    }
+
+    enum Direction: Equatable { case sending, receiving }
+
     struct TransferStatus {
         let message: String
         var metrics: AppleAlbumTransferMetrics? = nil
         var inventory: Int64? = nil
         var itemProgress: Float? = nil
+        var direction: Direction? = nil
     }
 
     let storage: SecureStorage
@@ -142,40 +161,26 @@ private struct AppleAlbumSession {
                   progress: @escaping (TransferStatus) -> Void) async throws -> String {
         guard !(receiveAllAndroid && androidSource != nil), androidTarget != nil || androidSource != nil || receiveAllAndroid else { throw MediaError193.malformed }
         guard album.identifier != PhotoSyncLibrary.Album.recent.identifier || (androidSource == nil && !receiveAllAndroid) else { throw MediaError193.unavailable }
-        let library = PhotoSyncLibrary(storage: storage)
-        var source: PhotoAlbumSource?
-        if androidTarget != nil {
-            let selected = try library.albumContents(album.identifier, lease: lease)
-            progress(TransferStatus(message: "正在检查 \(selected.visible.count) 项原始资源…"))
-            let namespace = "android-peer/" + peer.identity.id
-            source = try await PhotoAlbumSource.prepare(storage: storage, selected: selected, namespace: namespace,
-                                                        allowICloud: allowICloud, lease: lease) { done, total in
-                progress(TransferStatus(message: "核验原片 \(done)/\(total)"))
-            }
-        }
-        let target: PhotoAlbumTarget?
-        if androidSource != nil || receiveAllAndroid {
-            target =
-            PhotoAlbumTarget(storage: storage, albumID: album.identifier, peer: peer.identity.id,
-                             lease: lease, allowICloud: allowICloud, prepared: source) { done, total in
-                progress(TransferStatus(message: "核对本机相册原件 \(done)/\(total)"))
-            }
-        } else { target = nil }
+        let catalog = TransferCatalog()
         let delays: [UInt64] = [0, 1, 2, 4, 8]
+        var previousFailure: TransferFailure?
         for (index, delay) in delays.enumerated() {
             try Task.checkCancellation()
             try storage.validateResourceLease193(lease)
             if delay > 0 {
-                progress(TransferStatus(message: "连接中断，正在重连（\(index)/\(delays.count - 1)）。已保存的原件会先核对；如 Android 询问，请再次确认。"))
+                let reason = previousFailure.map { "\($0.stage)：\($0.reason)" } ?? "连接中断"
+                progress(TransferStatus(message: "\(reason)。正在重连（\(index)/\(delays.count - 1)），已保存的原件会先核对。"))
                 try await Task.sleep(nanoseconds: delay * 1_000_000_000)
-                source?.rewindForReconnect()
+                catalog.source?.rewindForReconnect()
             }
             do {
-                return try await transferPass(peer: peer, local: local, source: source, target: target,
+                return try await transferPass(peer: peer, local: local, catalog: catalog,
+                    album: album, allowICloud: allowICloud,
                     androidTarget: androidTarget, androidSource: androidSource, receiveAllAndroid: receiveAllAndroid,
                     resuming: index > 0, progress: progress)
             } catch {
                 try Task.checkCancellation()
+                previousFailure = error as? TransferFailure
                 guard index < delays.count - 1, Self.canReconnect(error) || (index > 0 && Self.isBusy(error)) else { throw error }
             }
         }
@@ -183,7 +188,7 @@ private struct AppleAlbumSession {
     }
 
     fileprivate static func canReconnect(_ error: Error) -> Bool {
-        AppleSyncTransport.retryableConnectionLoss(error)
+        AppleSyncTransport.retryableConnectionLoss((error as? TransferFailure)?.cause ?? error)
     }
 
     private static func isBusy(_ error: Error) -> Bool {
@@ -191,15 +196,26 @@ private struct AppleAlbumSession {
         return false
     }
 
+    private final class TransferCatalog {
+        var source: PhotoAlbumSource?
+        var target: PhotoAlbumTarget?
+    }
+
     private func transferPass(peer: AppleSyncTransport.Peer, local: AppleSyncTransport.Identity,
-                              source: PhotoAlbumSource?, target: PhotoAlbumTarget?,
+                              catalog: TransferCatalog, album: PhotoSyncLibrary.Album, allowICloud: Bool,
                               androidTarget: String?, androidSource: String?, receiveAllAndroid: Bool,
                               resuming: Bool,
                               progress: @escaping (TransferStatus) -> Void) async throws -> String {
         try Task.checkCancellation()
         try storage.validateResourceLease193(lease)
         progress(TransferStatus(message: "等待 Android 确认相册范围…"))
-        let channel = try await AppleSyncTransport.authenticate(peer, local: local, resuming: resuming)
+        let channel: AppleSyncTransport.Channel
+        do { channel = try await AppleSyncTransport.authenticate(peer, local: local, resuming: resuming) }
+        catch {
+            if Self.canReconnect(error) { throw TransferFailure(stage: "建立已配对连接", cause: error) }
+            throw error
+        }
+        var stage = "等待 Android 确认同步"
         do {
             let job = Self.identifier(), epoch = Self.identifier()
             var request: [String: Any] = ["job": job, "epoch": epoch, "scope": "ordinary195"]
@@ -224,34 +240,58 @@ private struct AppleAlbumSession {
             }
             if receiveAllAndroid && (ready["downloadScope"] as? String) != "allOrdinary199" { throw AppleSyncTransport.Failure.rejected("android-all-version") }
             try await channel.sendObject(1, Self.control("scope-commit195", context))
+            await channel.beginOrdinaryAlbumTransfer()
+            if androidTarget != nil && catalog.source == nil {
+                stage = "读取及核对 iOS 原件"
+                let library = PhotoSyncLibrary(storage: storage)
+                let selected = try library.albumContents(album.identifier, lease: lease)
+                progress(TransferStatus(message: "正在检查 \(selected.visible.count) 项原始资源…"))
+                catalog.source = try await MobileAlbumTransfer.withWaiting(channel) {
+                    try await PhotoAlbumSource.prepare(storage: storage, selected: selected,
+                        namespace: "android-peer/" + peer.identity.id, allowICloud: allowICloud, lease: lease) { done, total in
+                        progress(TransferStatus(message: "核验原片 \(done)/\(total)"))
+                    }
+                }
+            }
+            if catalog.target == nil && (androidSource != nil || receiveAllAndroid) {
+                catalog.target = PhotoAlbumTarget(storage: storage, albumID: album.identifier, peer: peer.identity.id,
+                    lease: lease, allowICloud: allowICloud, prepared: catalog.source) { done, total in
+                    progress(TransferStatus(message: "核对本机相册原件 \(done)/\(total)"))
+                }
+            }
             var details: [String] = []
-            if let source = source {
+            if let source = catalog.source {
+                stage = "发送：核对 Android 是否已有原件"
                 progress(TransferStatus(message: "正在发送 \(source.count) 项…"))
                 var inventory: Int64?
                 try await MobileAlbumTransfer.send(source, channel: channel, onInventory: {
                     inventory = $0
-                    progress(TransferStatus(message: "正在与 Android 核对原件…", inventory: inventory))
+                    progress(TransferStatus(message: "正在与 Android 核对原件…", inventory: inventory, direction: .sending))
                 }, onPayload: { done, total, rate in
-                    progress(Self.payloadLabel(done, total: total, rate: rate, inventory: inventory))
+                    stage = done == total ? "发送：等待 Android 写入及回执" : "发送 iOS 原件"
+                    progress(Self.payloadLabel(done, total: total, rate: rate, inventory: inventory, direction: .sending))
                 }) { done, total in
                     progress(TransferStatus(message: "Android 已核对 \(done)/\(total) 项",
-                                            inventory: inventory, itemProgress: Self.itemProgress(done, total)))
+                                            inventory: inventory, itemProgress: Self.itemProgress(done, total), direction: .sending))
                 }
-                details.append("Android 已核对 \(source.confirmed.count) 项，共 \(source.count + source.unavailable) 项")
+                details.append("Android 确认已存在或成功保存 \(source.confirmed.count) 项；待处理 \(source.count + source.unavailable - source.confirmed.count) 项。")
+                if source.unavailable > 0 { details.append("本机有 \(source.unavailable) 项原件暂不可读，未发送。") }
             }
-            if let target = target {
+            if let target = catalog.target {
+                stage = "接收：核对、下载或写入 iOS 相册"
                 let writing = try storage.beginAlbumPhotosWrite(lease: lease)
                 defer { storage.finishAlbumPhotosWrite(writing) }
                 progress(TransferStatus(message: "正在接收 Android 相册…"))
                 var inventory: Int64?
                 try await MobileAlbumTransfer.receive(target, channel: channel, onInventory: {
                     inventory = $0
-                    progress(TransferStatus(message: "正在核对相册中的原件…", inventory: inventory))
+                    progress(TransferStatus(message: "正在核对相册中的原件…", inventory: inventory, direction: .receiving))
                 }, onPayload: { done, total, rate in
-                    progress(Self.payloadLabel(done, total: total, rate: rate, inventory: inventory))
+                    stage = done == total ? "接收：写入及核验 iOS 系统相册" : "接收 Android 原件"
+                    progress(Self.payloadLabel(done, total: total, rate: rate, inventory: inventory, direction: .receiving))
                 }) { done, total in
                     progress(TransferStatus(message: "本机已核对 \(done)/\(total) 项",
-                                            inventory: inventory, itemProgress: Self.itemProgress(done, total)))
+                                            inventory: inventory, itemProgress: Self.itemProgress(done, total), direction: .receiving))
                 }
                 let completed = target.imported + target.reused
                 details.append("iOS 新增 \(target.imported) 项，复用 \(target.reused) 项，待处理 \(max(0, target.total - completed)) 项")
@@ -263,6 +303,7 @@ private struct AppleAlbumSession {
                     details.append("本机相册有 \(target.localUnverified) 项原件暂时不可核验，请检查照片授权或 iCloud 下载状态。")
                 }
             }
+            stage = "核对双向同步结束回执"
             try await channel.sendObject(1, Self.control("scope-done195", context))
             let done = try await channel.receiveObject(1)
             try Self.checkContext(done, context)
@@ -271,7 +312,11 @@ private struct AppleAlbumSession {
             return details.joined(separator: "\n")
         } catch {
             await channel.close()
-            throw error
+            switch error {
+            case is CancellationError, MediaError193.cancelled, AppleSyncTransport.Failure.declined,
+                 AppleSyncTransport.Failure.rejected(_): throw error
+            default: throw TransferFailure(stage: stage, cause: error)
+            }
         }
     }
 
@@ -280,12 +325,12 @@ private struct AppleAlbumSession {
         return Float(checked) / Float(total)
     }
 
-    private static func payloadLabel(_ done: Int64, total: Int64, rate: Double, inventory: Int64?) -> TransferStatus {
+    private static func payloadLabel(_ done: Int64, total: Int64, rate: Double, inventory: Int64?, direction: Direction) -> TransferStatus {
         let metrics = AppleAlbumTransferMetrics(done: done, total: total, rate: rate, inventory: inventory)
         let message = done == total
             ? Strings.text("正在校验写入", "Verifying and saving", "検証して保存中", "正在驗證並寫入")
             : Strings.text("正在加密传输", "Transferring securely", "暗号化して転送中", "正在加密傳輸")
-        return TransferStatus(message: message, metrics: metrics)
+        return TransferStatus(message: message, metrics: metrics, direction: direction)
     }
 
     private static func control(_ operation: String, _ context: [String: String]) -> [String: Any] {
@@ -318,6 +363,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
     private var pairingOptions: UIView?
     private var syncOptions: UIView?
     private var deviceOptions: UIView?
+    private var pairingTools: UIView?
     private var manualOptions: UIView?
     private let selectedDevice = UILabel()
     private var selectedDeviceCard: UIView?
@@ -335,6 +381,8 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
     private let syncProgress = UIProgressView(progressViewStyle: .default)
     private let statusCard = UIStackView()
     private let metricsStack = UIStackView()
+    private let outgoingSummary = UILabel()
+    private let incomingSummary = UILabel()
     private var metricsRows: [UIStackView] = []
     private var metricValues: [UILabel] = []
     private let byteFormatter = ByteCountFormatter()
@@ -408,7 +456,11 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         manualCard.spacing = 8
         manualCard.isHidden = true
         manualOptions = manualCard
-        let devices = Self.card("选择设备", fields: [searchDevices, discoveryStatus, nearbyDevices, manual, manualCard, help])
+        let tools = UIStackView(arrangedSubviews: [searchDevices, discoveryStatus, manual, manualCard, help])
+        tools.axis = .vertical
+        tools.spacing = 8
+        pairingTools = tools
+        let devices = Self.card("设备列表", fields: [nearbyDevices, tools])
         deviceOptions = devices
         let pairingCard = Self.card("手动配对", fields: [Self.label("在 Android 打开「同步设备」，并核对 Android 上显示的六位码。", style: .footnote), pairing])
         let connectionCard = Self.card("已配对设备", fields: [connectDevice])
@@ -476,6 +528,13 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         metricsStack.axis = .vertical
         metricsStack.spacing = 8
         metricsStack.isHidden = true
+        for (label, heading) in [(outgoingSummary, "本机发送给对方"), (incomingSummary, "本机从对方接收")] {
+            label.text = heading + "：待核对"
+            label.font = .preferredFont(forTextStyle: .subheadline)
+            label.adjustsFontForContentSizeCategory = true
+            label.numberOfLines = 0
+            metricsStack.addArrangedSubview(label)
+        }
         let captions = [
             Strings.text("已传输 / 批次容量", "Transferred / batch size", "転送済み / バッチ容量", "已傳輸 / 批次容量"),
             Strings.text("相册原件总量", "Total originals", "アルバム原本の容量", "相簿原始檔總量"),
@@ -520,6 +579,8 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         syncProgress.isHidden = true
         syncProgress.progress = 0
         metricsStack.isHidden = true
+        outgoingSummary.text = "本机发送给对方：待核对"
+        incomingSummary.text = "本机从对方接收：待核对"
     }
 
     private func showTransfer(_ update: AppleAlbumSession.TransferStatus) {
@@ -554,6 +615,13 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
             time = durationFormatter.string(from: TimeInterval(duration)) ?? "—"
         } else {
             time = "—"
+        }
+        if let direction = update.direction {
+            let receiving = direction == .receiving
+            let summary = receiving ? incomingSummary : outgoingSummary
+            let title = receiving ? "本机从对方接收" : "本机发送给对方"
+            let remaining = metrics.done == metrics.total ? "本批已传输" : "本批剩余 \(time)"
+            summary.text = "\(title)：本批 \(bytes(metrics.done)) / \(bytes(metrics.total)) · \(remaining)"
         }
         showMetricValues(["\(bytes(metrics.done)) / \(bytes(metrics.total))", metrics.inventory.map(bytes) ?? "—", rate, time])
         syncProgress.isHidden = false
@@ -735,19 +803,22 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         return String(cString: host)
     }
 
+    private static func displayName(_ name: String) -> String {
+        name.uppercased() == "2509FPN0BC" ? "Xiaomi 17 Pro Max" : name
+    }
+
     private func refreshNearbyDevices() {
         for view in nearbyDevices.arrangedSubviews { nearbyDevices.removeArrangedSubview(view); view.removeFromSuperview() }
         let isPairing = pages.selectedSegmentIndex == 1
-        var devices = nearbyAddresses.map { (name: $0.key, address: $0.value) }
-        if !isPairing {
-            for peer in trustedDevices where !devices.contains(where: { $0.address == peer.address }) {
-                devices.append((name: peer.name, address: peer.address))
-            }
-        }
+        let trustedAddresses = Set(trustedDevices.map { $0.address })
+        let devices = isPairing
+            ? nearbyAddresses.map { (name: $0.key, address: $0.value) }.filter { !trustedAddresses.contains($0.address) }
+            : trustedDevices.map { (name: $0.name, address: $0.address) }
         if devices.isEmpty {
-            nearbyDevices.addArrangedSubview(Self.label("附近的 Android 设备会显示在这里。", style: .footnote))
+            nearbyDevices.addArrangedSubview(Self.label(isPairing ? "未发现待配对的新设备。" : "还没有已配对的设备。请先打开「配对设备」。", style: .footnote))
         }
-        for (label, ip) in devices.sorted(by: { ($0.name, $0.address) < ($1.name, $1.address) }) {
+        for (name, ip) in devices.sorted(by: { ($0.name, $0.address) < ($1.name, $1.address) }) {
+            let label = Self.displayName(name)
             let button = UIButton(type: .system)
             button.configuration = Self.action(title: isPairing ? "配对" : "连接", symbol: isPairing ? "link" : "wifi")
             button.accessibilityLabel = (isPairing ? "配对 " : "连接 ") + label
@@ -843,10 +914,12 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         let canResume = resumeDeviceAddress != nil && resumeDeviceAddress == enteredAddress && verifiedPeerID != nil
         pages.isHidden = hasSelection
         deviceOptions?.isHidden = hasSelection
+        pairingTools?.isHidden = !pairingPage
+        if !pairingPage { manualOptions?.isHidden = true }
         selectedDeviceCard?.isHidden = !hasSelection
         selectedDevice.text = selectedName
         pairingOptions?.isHidden = hasSelection || !pairingPage || !manual
-        connectionOptions?.isHidden = hasSelection || pairingPage || !manual
+        connectionOptions?.isHidden = true
         syncOptions?.isHidden = !hasSelection || (!connected && !canResume)
         start.isHidden = !hasSelection || (!connected && !canResume)
         start.configuration?.title = canResume ? "继续同步" : "开始同步"
@@ -882,7 +955,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
             try Task.checkCancellation()
             settings.remember(AppleAlbumSession.StoredPeer(peer, trusted: true))
             try session.save(settings)
-            self.selectedName = remote.name
+            self.selectedName = Self.displayName(remote.name)
             self.verifiedPeerID = remote.id
             self.loadTrustedDevices()
             self.verifiedAddress = ip
@@ -1101,6 +1174,11 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
             status.text = "配对码不一致。请重新配对，并输入 Android 当前显示的六位码。"
         case AppleSyncTransport.Failure.declined, MediaError193.cancelled, is CancellationError:
             status.text = "已取消。再次同步时会先核对已接收原片。"
+        case let failure as AppleAlbumSession.TransferFailure:
+            let retry = AppleAlbumSession.canReconnect(failure)
+            if retry { start.configuration?.title = "继续同步" }
+            status.text = "\(failure.stage)失败：\(failure.reason)。" +
+                (retry ? "网络恢复后可继续，已写入的原件会先核对。" : "请检查这一步后再试。")
         case let failure where AppleAlbumSession.canReconnect(failure) && resumeDeviceAddress == nil:
             status.text = "无法连接 Android。请确认两台设备在同一局域网、iOS 已允许本地网络，并在 Android 打开「同步设备」。"
         case let failure where AppleAlbumSession.canReconnect(failure):

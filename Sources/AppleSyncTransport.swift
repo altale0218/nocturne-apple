@@ -282,6 +282,9 @@ enum AppleSyncTransport {
         private let cipher: Cipher
         private var transmitted: UInt64 = 0, received: UInt64 = 0, txBytes: UInt64 = 0, rxBytes: UInt64 = 0
         private var sending = false, reading = false
+        private var ordinaryAlbumTransfer = false
+
+        func beginOrdinaryAlbumTransfer() { ordinaryAlbumTransfer = true }
 
         init(socket: Connection, cipher: Cipher) { self.socket = socket; self.cipher = cipher }
 
@@ -323,7 +326,7 @@ enum AppleSyncTransport {
         }
 
         func receiveFrame() async throws -> (kind: UInt8, data: Data) {
-            for _ in 0..<180 {
+            for _ in 0..<(ordinaryAlbumTransfer ? 540 : 180) {
                 let result = try await receiveRaw()
                 if result.kind != 8 { return result }
                 guard result.data == Data("waiting173".utf8) else { throw Failure.malformed }

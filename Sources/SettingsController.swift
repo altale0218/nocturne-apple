@@ -199,7 +199,7 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         case "mode": changeMode()
         case "boundary": message(label(id), Strings.text("缓存始终经过认证加密。Private 增加每次开启的密码验证，影响解锁耗时；不会逐帧验证密码或降低原片分辨率。系统相册中的原片仍由系统管理，不会因为开启 Private 自动隐藏或加密复制。本工程未经过安全审计。", "Caches always use authenticated encryption. Private adds startup password verification, affecting unlock time, not per-frame playback or original resolution. Originals in Photos remain managed by the system and are not hidden or copied by enabling Private. This engineering preview has not had a security audit.", "キャッシュは常に認証付き暗号化。Private は起動時のパスワード検証を追加し、解除時間に影響します。フレーム処理や元画像の解像度は変えません。システム写真の元ファイルは自動的に非表示や複製になりません。セキュリティ監査は未実施です。", "快取始終使用驗證加密。Private 增加啟動密碼驗證，影響解鎖時間，不影響逐幀播放與原片解析度。系統相簿原片不會自動隱藏或加密複製。本工程未經安全審計。"))
         case "crashReport": if #available(iOS 15, *) { CrashReports209.shared.present(from: self) }
-        case "release": message(label(id), Release.notes)
+        case "release": showReleaseNotes()
         default: break
         }
     }
@@ -254,13 +254,25 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         navigationItem.searchController?.isActive = false
         dismiss(animated: true) { change?() }
     }
+    private func showReleaseNotes() {
+        let picker = UIAlertController(title: "更新日志", message: nil, preferredStyle: .alert)
+        picker.addAction(UIAlertAction(title: "当前版本", style: .default) { [weak self] _ in
+            self?.message("Nocturne · " + Release.version, Release.notes)
+        })
+        picker.addAction(UIAlertAction(title: "历史版本", style: .default) { [weak self] _ in
+            self?.message("Apple 版本历史", Release.history)
+        })
+        picker.addAction(UIAlertAction(title: Strings.cancel, style: .cancel))
+        present(picker, animated: true)
+    }
+
     private func showPrivacyChoices() {
         let picker = UIAlertController(title: label("privacy"), message: nil, preferredStyle: .alert)
         picker.addAction(UIAlertAction(title: "简明版", style: .default) { [weak self] _ in
-            self?.message("隐私政策 · 简明版", "照片权限用于浏览原件、生成缩略图和按你的指令同步。局域网权限用于搜索和连接已配对设备。Private 的生物识别由系统验证，缓存使用认证加密。")
+            self?.message("隐私政策 · 简明版", "照片、视频和文件夹访问用于浏览、导入和刷新本机图库。Android 可请求通知、安装更新和系统生物识别权限；Windows Private 使用指定且已解锁的 BitLocker 文件夹。应用不采集指纹或面部模板。\n\n联网用于浏览器、云更新、已配对设备同步和设备统计。照片、文件路径、Private 内容和密钥不会发送给更新或统计服务。\n\n设备统计默认开启，收集随机安装 ID、版本、已知安装时间、设备型号与系统版本；Windows 还收集 CPU、GPU 和内存配置。")
         })
         picker.addAction(UIAlertAction(title: "完整版", style: .default) { [weak self] _ in
-            self?.message("隐私政策 · 完整版", "照片：访问你授权的图库，显示照片和视频、读取拍摄信息、准备预览。整库同步需要完整权限，可能通过 Apple 照片从 iCloud 取得原片。\n\n局域网：发现设备；核对配对码后保存设备凭证。只有启动同步并获对方同意后才传输媒体。\n\nPrivate：加密原件保存在应用内。进入 Private 不会自动移动或隐藏系统相册里的照片。生物识别由系统处理，应用不读取生物特征数据。切到后台会锁定 Private。\n\n系统界面：实时活动仅显示普通图库任务的进度、容量、速度，不显示照片或文件名。内置浏览器会连接你主动访问的网站。可在系统设置管理权限。")
+            self?.message("隐私政策 · 完整版", "Nocturne 隐私政策\n生效日期：2026年11月2日 · 版本227\n\n一、照片与 Private\n普通图库在本机读取所选照片/视频。Private 文件、缩略图和索引保存在应用加密空间；Windows Private 仅使用你指定且已解锁的 BitLocker 存储位置。照片、文件路径、Private 内容、密码、解密密钥、配对凭据、浏览记录和本地缓存不会上传至设备统计或软件更新服务器。图库不会自动上传云相册。\n\n二、设备与版本统计\n新版默认开启设备统计，不额外弹出首次统计告知。本版不提供应用内统计开关或自行删除云端记录的按钮；既有撤回选择升级后保留。统计与图库、Private、更新及设备同步完全分离。\n发送随机安装ID、当前版本和Build、可取得的首次安装/当前版本安装时间、已记录版本履历及前后关系、最后上报时间。Android还发送品牌、型号及系统版本；Windows还发送设备品牌型号、系统版本、CPU/GPU型号和物理内存容量。不读取IMEI、MAC、硬件序列号、TPM或系统设备唯一ID。缺失的旧版安装时间保持未知。随机ID仍可关联同一安装实例，设备参数也可能具有识别性，统计并非完全匿名。\n首次启用、版本或设备参数变化时发送；无变化时正常最多每七天一次，失败退避。统计由独立HTTPS服务传送至Cloudflare Workers/D1，可能存储在境外，由受身份验证的管理后台访问；不是端到端加密。Cloudflare作为网络服务商会接触来源IP等网络元数据，应用统计数据库不记录IP，不启用请求正文日志。统计记录在服务运行期间保留；服务端清理或终止服务时删除对应记录。此前已撤回的安装实例仍停止上报，未完成的删除请求联网后继续执行。为防止旧请求复活，删除后保留随机凭据的不可逆摘要约30天，随后自动清理。平台备份的物理清理时间不由本应用保证。\n\n三、权限用途\n照片/视频读取和用户所选媒体权限：展示、导入及刷新本机内容；文件夹授权仅访问用户选择的来源。照片位置权限用于读取原始拍摄位置，不申请GPS实时定位。旧版Android存储写入权限用于用户确认的保存。通知、前台媒体处理/数据同步及唤醒权限用于后台处理任务和必要进度，不用于统计保活。网络/网络状态权限用于浏览器、云更新、已配对的局域网同步和设备统计；多播权限用于局域网设备发现。安装未知应用权限仅用于用户确认的软件更新，系统负责安装确认。生物识别权限调用系统认证，不读取或保存指纹/面部模板；Private密码与本地加密密钥不进入统计。拒绝可选权限不影响无关功能，可能使对应功能不可用。没有申请通讯录、麦克风或实时位置。\n\n四、浏览器、更新与同步\n浏览器网站和搜索引擎按正常网络请求获取网址、IP及用户主动提交内容；浏览器历史依用户选择在本机保存，网站Cookie用于对应网站。HTTPS保护传输；用户选择HTTP时，中间网络可能读取或修改内容。云更新从用户选择的Cloudflare、Gitee 或 GitHub获取公开版本和签名安装包，服务方可接触请求IP，不上传图库。设备相册同步须独立配对、验证目标及用户授权，通过加密链路传输；普通内容可按同步规则保存至系统相册，Private内容加密保存，不自动转发给非目标设备。\n\n五、删除与管理\n可在系统设置撤回媒体/通知等系统权限。本页仅提供政策说明，不提供统计配置或删除按钮。移入/移出Private、媒体删除仍遵循身份验证、原件完整性和系统授权规则；不能清除第三方既有副本、系统回收站或云备份。卸载可能删除本地密钥与应用私有内容，请先安全移出或备份。政策变更通过版本日志及本页说明，新增数据用途需重新告知。问题可通过应用诊断导出后由用户自行审核提交，不会自动上传照片或原始日志。")
         })
         picker.addAction(UIAlertAction(title: Strings.cancel, style: .cancel))
         present(picker, animated: true)
