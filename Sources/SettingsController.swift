@@ -500,7 +500,7 @@ private enum AppleUpdateNetwork {
             .appendingPathComponent("VerifiedUpdates/\(offer.sha256)", isDirectory: true)
         try files.createDirectory(at: folder, withIntermediateDirectories: true)
         let local = folder.appendingPathComponent(offer.fileName)
-        if files.fileExists(atPath: local.path) { try files.replaceItem(at: local, withItemAt: temp) }
+        if files.fileExists(atPath: local.path) { try files.replaceItem(at: local, withItemAt: temp, backupItemName: nil, options: [], resultingItemURL: nil) }
         else { try files.moveItem(at: temp, to: local) }
         return local
     }
