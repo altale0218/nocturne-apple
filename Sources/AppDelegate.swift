@@ -55,7 +55,7 @@ final class CrashReports209: NSObject, MXMetricManagerSubscriber {
     func didReceive(_ payloads: [MXDiagnosticPayload]) {
         guard let report = payloads.flatMap({ $0.crashDiagnostics ?? [] }).last else { return }
         let kind = "signal:\(report.signal?.intValue ?? 0);exception:\(report.exceptionType?.intValue ?? 0)"
-        let version = report.metaData.applicationVersion
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
         let summary = Summary(platform: "ios", version: version, kind: kind)
         queue.async {
             if let data = try? JSONEncoder().encode(summary) {
