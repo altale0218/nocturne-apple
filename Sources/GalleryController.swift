@@ -484,13 +484,17 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
             let reflow: () -> Void = {
                 self.layout.sizePreset = preset
                 self.collection.layoutIfNeeded()
+                if let anchor = self.pinchAnchor193, let attributes = self.layout.layoutAttributesForItem(at: anchor) {
+                    let inset = self.collection.adjustedContentInset
+                    let minimum = -inset.top
+                    let maximum = max(minimum, self.collection.contentSize.height - self.collection.bounds.height + inset.bottom)
+                    self.collection.contentOffset.y = min(maximum, max(minimum, attributes.frame.midY - self.pinchOffset193))
+                }
             }
             if UIAccessibility.isReduceMotionEnabled || storage.state.settings.reducedMotion { reflow() }
-            else { UIView.animate(withDuration: 0.20, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction, .curveEaseOut], animations: reflow) }
-            if let anchor = pinchAnchor193, let attributes = layout.layoutAttributesForItem(at: anchor) {
-                let minimum = -collection.contentInset.top
-                let maximum = max(minimum, collection.contentSize.height - collection.bounds.height + collection.contentInset.bottom)
-                collection.contentOffset.y = min(maximum, max(minimum, attributes.frame.midY - pinchOffset193))
+            else {
+                UIView.animate(withDuration: 0.26, delay: 0, usingSpringWithDamping: 0.89, initialSpringVelocity: 0,
+                               options: [.beginFromCurrentState, .allowUserInteraction], animations: reflow)
             }
         }
         if gesture.state == .ended || gesture.state == .cancelled {

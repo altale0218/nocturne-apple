@@ -118,9 +118,9 @@ final class SessionClock {
     }
 }
 enum Release {
-    static let history = "Nocturne 1.5.29\n已配对设备断线后在相同范围内重连，精简设备选择。\n\nNocturne 1.5.28\n分别核验每次 Android 配对连接，区分身份不一致的阶段。\n\nNocturne 1.5.27\n为附近设备提供独立配对卡片，加入崩溃报告上传。\n\nNocturne 1.5.26\n显示 Android 拒绝配对的具体原因。\n\nNocturne 1.5.25\n图库子页面改用横向转场，并显示配对失败阶段。\n\nNocturne 1.5.24\n细化连接与配对诊断，调整图库交互。\n\nNocturne 1.5.23\n调整图库手势、导航与同步界面。\n\nNocturne 1.5.22\n与 Android 对齐部分图库设置和 Private 功能。\n\nNocturne 1.5.21\n加入同步实时活动，连接时核对普通图库范围。\n\nNocturne 1.5.20\n调整查看器，验证整库同步连接。\n\nNocturne 1.5.19\n调整查看器手势、菜单锚点和预览条拖动。\n\nNocturne 1.5.18\n支持接收 Android 普通图库，调整 Apple 图库控件。\n\nNocturne 1.5.17\n直接进入普通图库，调整图库、查看器和同步。\n\nNocturne 1.5.16\n建立 Apple 客户端源码基线。"
-    static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.5.30"
-    static var notes: String { "Nocturne \(version) · Apple 开发预览\n\n区分设备配对与连接；放宽持续收到保活的大图库核对等待时间，保留断网检测。分开显示发送和接收的批次进度，并指出连接、原件读取、相册写入或回执失败的环节。\n\n补全更新历史，与 Android 对齐隐私政策。调整侧滑返回和抽屉遮挡。" }
+    static let history = "Nocturne 1.5.30\n区分配对和连接页，显示传输失败阶段，补齐更新历史。\n\nNocturne 1.5.29\n已配对设备断线后在相同范围内重连，精简设备选择。\n\nNocturne 1.5.28\n分别核验每次 Android 配对连接，区分身份不一致的阶段。\n\nNocturne 1.5.27\n为附近设备提供独立配对卡片，加入崩溃报告上传。\n\nNocturne 1.5.26\n显示 Android 拒绝配对的具体原因。\n\nNocturne 1.5.25\n图库子页面改用横向转场，并显示配对失败阶段。\n\nNocturne 1.5.24\n细化连接与配对诊断，调整图库交互。\n\nNocturne 1.5.23\n调整图库手势、导航与同步界面。\n\nNocturne 1.5.22\n与 Android 对齐部分图库设置和 Private 功能。\n\nNocturne 1.5.21\n加入同步实时活动，连接时核对普通图库范围。\n\nNocturne 1.5.20\n调整查看器，验证整库同步连接。\n\nNocturne 1.5.19\n调整查看器手势、菜单锚点和预览条拖动。\n\nNocturne 1.5.18\n支持接收 Android 普通图库，调整 Apple 图库控件。\n\nNocturne 1.5.17\n直接进入普通图库，调整图库、查看器和同步。\n\nNocturne 1.5.16\n建立 Apple 客户端源码基线。"
+    static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.5.31"
+    static var notes: String { "Nocturne \(version) · Apple 开发预览\n\n普通相册同步先在双向核对中统计重复、待传和待核实项目，使用测试包估算发送和接收用时，确认后再传原件。改进 Android 接收侧暂存错误诊断。\n\n缩小图库间距，调整双指缩放的网格重排动画。" }
 }
 enum Strings {
     static var language: String {

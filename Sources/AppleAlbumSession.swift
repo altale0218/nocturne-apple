@@ -80,6 +80,16 @@ private struct AppleAlbumSession {
             switch cause {
             case AppleSyncTransport.Failure.timeout: return "对端响应超时"
             case AppleSyncTransport.Failure.closed: return "对端或网络关闭了连接"
+            case NWError.posix(.ECONNRESET): return "连接被对端或网络重置（54）"
+            case let AppleSyncTransport.Failure.receiver(code):
+                switch code {
+                case "album-error-space1": return "Android 没有足够空间暂存当前原件"
+                case "album-error-storage1": return "Android 无法创建原件暂存文件"
+                case "album-error-verify1": return "Android 未能核验收到的原件或回执"
+                case "album-error-access1": return "Android 同步授权已撤销或图库已锁定"
+                case "album-error-plan1": return "Android 图库在确认后发生变化，请重新核对"
+                default: return "Android 接收或写入原件失败"
+                }
             case AppleSyncTransport.Failure.malformed, MediaError193.changed, MediaError193.verification:
                 return "报文、原件或回执未通过核验"
             case MediaError193.unavailable: return "相册或原件不可用"
@@ -158,6 +168,7 @@ private struct AppleAlbumSession {
 
     func transfer(peer: AppleSyncTransport.Peer, local: AppleSyncTransport.Identity, album: PhotoSyncLibrary.Album,
                   sendTo androidTarget: String?, receiveFrom androidSource: String?, receiveAllAndroid: Bool = false, allowICloud: Bool,
+                  approvePreview: @escaping (String) async -> Bool,
                   progress: @escaping (TransferStatus) -> Void) async throws -> String {
         guard !(receiveAllAndroid && androidSource != nil), androidTarget != nil || androidSource != nil || receiveAllAndroid else { throw MediaError193.malformed }
         guard album.identifier != PhotoSyncLibrary.Album.recent.identifier || (androidSource == nil && !receiveAllAndroid) else { throw MediaError193.unavailable }
@@ -177,7 +188,7 @@ private struct AppleAlbumSession {
                 return try await transferPass(peer: peer, local: local, catalog: catalog,
                     album: album, allowICloud: allowICloud,
                     androidTarget: androidTarget, androidSource: androidSource, receiveAllAndroid: receiveAllAndroid,
-                    resuming: index > 0, progress: progress)
+                    resuming: index > 0, approvePreview: approvePreview, progress: progress)
             } catch {
                 try Task.checkCancellation()
                 previousFailure = error as? TransferFailure
@@ -196,6 +207,18 @@ private struct AppleAlbumSession {
         return false
     }
 
+    private static func previewReport(_ outgoing: MobileAlbumTransfer.PreviewTotals, _ incoming: MobileAlbumTransfer.PreviewTotals,
+                                      _ upload: Int64, _ download: Int64) -> String {
+        func row(_ label: String, _ totals: MobileAlbumTransfer.PreviewTotals, _ rate: Int64) -> String {
+            let size = ByteCountFormatter.string(fromByteCount: totals.bytes, countStyle: .file)
+            let seconds = (totals.bytes + rate - 1) / rate
+            let time = seconds < 60 ? "\(seconds) 秒" : "约 \((seconds + 59) / 60) 分钟"
+            return "【\(label)】待传 \(totals.pending) 项 · \(size) · \(time)\n完全重复 \(totals.duplicates) 项，待核实 \(totals.deferred) 项"
+        }
+        return row("发送", outgoing, upload) + "\n\n" + row("接收", incoming, download)
+            + "\n\n预计时间由各方向的测试包测得，不包含 iCloud 下载或系统相册写入时间。"
+    }
+
     private final class TransferCatalog {
         var source: PhotoAlbumSource?
         var target: PhotoAlbumTarget?
@@ -204,7 +227,7 @@ private struct AppleAlbumSession {
     private func transferPass(peer: AppleSyncTransport.Peer, local: AppleSyncTransport.Identity,
                               catalog: TransferCatalog, album: PhotoSyncLibrary.Album, allowICloud: Bool,
                               androidTarget: String?, androidSource: String?, receiveAllAndroid: Bool,
-                              resuming: Bool,
+                              resuming: Bool, approvePreview: @escaping (String) async -> Bool,
                               progress: @escaping (TransferStatus) -> Void) async throws -> String {
         try Task.checkCancellation()
         try storage.validateResourceLease193(lease)
@@ -220,6 +243,8 @@ private struct AppleAlbumSession {
             let job = Self.identifier(), epoch = Self.identifier()
             var request: [String: Any] = ["job": job, "epoch": epoch, "scope": "ordinary195"]
             request["op"] = "scope195"; request["platform"] = "ios"; request["operation"] = "album1"
+            request["resourceReady1"] = true
+            request["albumPreview1"] = true
             if let androidTarget = androidTarget { request["upload"] = androidTarget }
             if receiveAllAndroid { request["downloadScope"] = "allOrdinary199" }
             else if let androidSource = androidSource { request["download"] = androidSource }
@@ -230,7 +255,7 @@ private struct AppleAlbumSession {
             switch ready["op"] as? String {
             case "scope-busy195": throw AppleSyncTransport.Failure.rejected("busy")
             case "scope-denied200":
-                if let reason = ready["operation"] as? String, reason == "mode173" || reason == "consent173" {
+                if let reason = ready["operation"] as? String, ["mode173", "consent173", "album-preview-required"].contains(reason) {
                     throw AppleSyncTransport.Failure.rejected(reason)
                 }
                 throw AppleSyncTransport.Failure.declined
@@ -239,6 +264,9 @@ private struct AppleAlbumSession {
                       ready["platform"] as? String == "android" else { throw MediaError193.verification }
             }
             if receiveAllAndroid && (ready["downloadScope"] as? String) != "allOrdinary199" { throw AppleSyncTransport.Failure.rejected("android-all-version") }
+            guard ready["albumPreview1"] as? Bool == true else {
+                throw AppleSyncTransport.Failure.rejected("album-preview-required")
+            }
             try await channel.sendObject(1, Self.control("scope-commit195", context))
             await channel.beginOrdinaryAlbumTransfer()
             if androidTarget != nil && catalog.source == nil {
@@ -259,12 +287,47 @@ private struct AppleAlbumSession {
                     progress(TransferStatus(message: "核对本机相册原件 \(done)/\(total)"))
                 }
             }
+            stage = "双向核对重复原件"
+            progress(TransferStatus(message: "正在交换原件指纹、核对已同步与重复内容…"))
+            var outbound = MobileAlbumTransfer.PreviewTotals(), inbound = MobileAlbumTransfer.PreviewTotals()
+            if let source = catalog.source {
+                outbound = try await MobileAlbumTransfer.previewSend(source, channel: channel)
+                source.rewindForReconnect()
+            }
+            if let target = catalog.target {
+                inbound = try await MobileAlbumTransfer.previewReceive(target, channel: channel)
+            }
+            stage = "双向线路测速"
+            let sample = 512 * 1024
+            let started = DispatchTime.now().uptimeNanoseconds
+            try await channel.send(4, Data(repeating: 0, count: sample))
+            let echoed = try await channel.receiveObject(6)
+            guard echoed["op"] as? String == "album-probe-ok1" else { throw MediaError193.malformed }
+            let elapsed = max(1_000_000, DispatchTime.now().uptimeNanoseconds - started)
+            let outgoingRate = max(1, Int64(Double(sample) * 1_000_000_000 / Double(elapsed)))
+            let down = try await channel.receiveFrame()
+            guard down.kind == 4, down.data.count == sample else { throw MediaError193.malformed }
+            try await channel.sendObject(6, ["op": "album-probe-ok1"])
+            let result = try await channel.receiveObject(6)
+            guard result["op"] as? String == "album-probe-rate1",
+                  let incomingRate = result["rate"] as? Int64, (1...524_288_000).contains(incomingRate)
+                  else { throw MediaError193.malformed }
+            stage = "等待双方确认同步报告"
+            let report = Self.previewReport(outbound, inbound, outgoingRate, incomingRate)
+            try await channel.sendObject(1, ["op": "album-preview-rate1", "rate": outgoingRate])
+            progress(TransferStatus(message: report))
+            let approved = try await MobileAlbumTransfer.withWaiting(channel) { await approvePreview(report) }
+            try Task.checkCancellation()
+            try await channel.sendObject(1, ["op": "album-preview-confirm1", "approved": approved])
+            let confirmation = try await channel.receiveObject(2)
+            guard confirmation["op"] as? String == "album-preview-confirm1" else { throw MediaError193.malformed }
+            guard approved, confirmation["approved"] as? Bool == true else { throw AppleSyncTransport.Failure.declined }
             var details: [String] = []
             if let source = catalog.source {
                 stage = "发送：核对 Android 是否已有原件"
                 progress(TransferStatus(message: "正在发送 \(source.count) 项…"))
                 var inventory: Int64?
-                try await MobileAlbumTransfer.send(source, channel: channel, onInventory: {
+                try await MobileAlbumTransfer.send(source, channel: channel, resourceReady: ready["resourceReady1"] as? Bool == true, approval: outbound, onInventory: {
                     inventory = $0
                     progress(TransferStatus(message: "正在与 Android 核对原件…", inventory: inventory, direction: .sending))
                 }, onPayload: { done, total, rate in
@@ -283,7 +346,7 @@ private struct AppleAlbumSession {
                 defer { storage.finishAlbumPhotosWrite(writing) }
                 progress(TransferStatus(message: "正在接收 Android 相册…"))
                 var inventory: Int64?
-                try await MobileAlbumTransfer.receive(target, channel: channel, onInventory: {
+                try await MobileAlbumTransfer.receive(target, channel: channel, approval: inbound, onInventory: {
                     inventory = $0
                     progress(TransferStatus(message: "正在核对相册中的原件…", inventory: inventory, direction: .receiving))
                 }, onPayload: { done, total, rate in
@@ -1033,6 +1096,17 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         }
     }
 
+    @MainActor private func confirmPreview(_ report: String) async -> Bool {
+        guard viewIfLoaded?.window != nil, presentedViewController == nil, !Task.isCancelled else { return false }
+        return await withCheckedContinuation { reply in
+            codeReply = reply
+            let alert = UIAlertController(title: "确认相册同步", message: report, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "取消", style: .cancel) { [weak self] _ in self?.replyToCode(false) })
+            alert.addAction(UIAlertAction(title: "同意传输原件", style: .default) { [weak self] _ in self?.replyToCode(true) })
+            present(alert, animated: true)
+        }
+    }
+
     private func replyToCode(_ accepted: Bool) {
         if let reply = codeReply { codeReply = nil; reply.resume(returning: accepted) }
     }
@@ -1065,7 +1139,10 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
             }
             self.status.text = try await session.transfer(peer: peer, local: session.local(settings), album: .all,
                 sendTo: "Nocturne", receiveFrom: nil, receiveAllAndroid: true,
-                allowICloud: true) { [weak self] update in
+                allowICloud: true, approvePreview: { [weak self] report in
+                    guard let self else { return false }
+                    return await self.confirmPreview(report)
+                }) { [weak self] update in
                     DispatchQueue.main.async {
                         guard let self = self, self.statusEpoch == statusEpoch else { return }
                         self.showTransfer(update)
@@ -1174,6 +1251,10 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
             status.text = "配对码不一致。请重新配对，并输入 Android 当前显示的六位码。"
         case AppleSyncTransport.Failure.declined, MediaError193.cancelled, is CancellationError:
             status.text = "已取消。再次同步时会先核对已接收原片。"
+        case AppleSyncTransport.Failure.rejected("album-preview-required"):
+            status.text = "对端不支持先核对再确认。请更新 Android 后重试；没有发送原件。"
+        case AppleSyncTransport.Failure.rejected("album-plan-changed"):
+            status.text = "相册内容已变化。请重新核对后确认。"
         case let failure as AppleAlbumSession.TransferFailure:
             let retry = AppleAlbumSession.canReconnect(failure)
             if retry { start.configuration?.title = "继续同步" }

@@ -27,8 +27,8 @@ enum MobileAlbumTransfer {
     typealias Channel = AppleSyncTransport.Channel
     private static let maximumCount = 100_000
 
-    static func send(_ source: Source, channel: Channel, batchReceipts: Bool = true,
-                     onInventory: ((Int64?) -> Void)? = nil,
+    static func send(_ source: Source, channel: Channel, batchReceipts: Bool = true, resourceReady: Bool = false,
+                     approval: PreviewTotals? = nil, onInventory: ((Int64?) -> Void)? = nil,
                      onPayload: ((Int64, Int64, Double) -> Void)? = nil,
                      progress: (Int, Int) -> Void = { _, _ in }) async throws {
         let count = source.count
@@ -52,6 +52,9 @@ enum MobileAlbumTransfer {
             let request = try await expect(channel, kind: 2, operation: "album-want1", page: page.id)
             let items = Dictionary(uniqueKeysWithValues: page.assets.map { ($0.id, $0) })
             let wanted = try requested(request["assets"], items: items)
+            if let approval, !wanted.allSatisfy({ items[$0].map(approval.allows) == true }) {
+                throw AppleSyncTransport.Failure.rejected("album-plan-changed")
+            }
             var committed = Set<String>(), declined = Set<String>()
             payload.beginPage(wanted: wanted, items: items)
             var window = PageWindow()
@@ -60,6 +63,10 @@ enum MobileAlbumTransfer {
                 try account(asset, bytes: &bytes)
                 try await channel.sendObject(3, packetFor("album-asset1", page: page.id, item: id))
                 for (part, resource) in asset.resources.enumerated() {
+                    if resourceReady {
+                        let grant = try await expect(channel, kind: 6, operation: "album-resource-ready1", page: page.id, item: id)
+                        guard grant["part"] as? Int == part else { throw MediaError193.changed }
+                    }
                     let input = try await withWaiting(channel) { try await source.open(asset, part: part) }
                     try await transmit(input, resource: resource, channel: channel, payload: payload)
                     try await channel.sendObject(5, packetFor("album-resource-end1", page: page.id, item: id,
@@ -93,7 +100,7 @@ enum MobileAlbumTransfer {
         guard final["count"] as? Int == count else { throw MediaError193.changed }
     }
 
-    static func receive(_ target: Target, channel: Channel,
+    static func receive(_ target: Target, channel: Channel, approval: PreviewTotals? = nil,
                         onInventory: ((Int64?) -> Void)? = nil,
                         onPayload: ((Int64, Int64, Double) -> Void)? = nil, progress: (Int, Int) -> Void = { _, _ in }) async throws {
         do {
@@ -133,6 +140,9 @@ enum MobileAlbumTransfer {
                 let items = Dictionary(uniqueKeysWithValues: page.assets.map { ($0.id, $0) })
                 let plan = try await withWaiting(channel) { try await target.plan(page) }
                 let wanted = try requested(plan, items: items)
+                if let approval, !wanted.allSatisfy({ items[$0].map(approval.allows) == true }) {
+                    throw AppleSyncTransport.Failure.rejected("album-plan-changed")
+                }
                 var committed = Set<String>(), declined = Set<String>()
                 try await channel.sendObject(2, packetFor("album-want1", page: page.id, fields: ["assets": wanted]))
                 payload.beginPage(wanted: wanted, items: items)
@@ -174,6 +184,93 @@ enum MobileAlbumTransfer {
         } catch {
             await target.abort()
             throw error
+        }
+    }
+
+    struct PreviewSelection {
+        let pending: [String]
+        let duplicates: Int
+        let deferred: Int
+    }
+
+    struct PreviewTotals {
+        var pending = 0
+        var duplicates = 0
+        var deferred = 0
+        var bytes: Int64 = 0
+        private var approved: [String: String] = [:]
+        private var originals = Set<String>()
+
+        mutating func record(_ choice: PreviewSelection, page: MobileAlbumManifest.Page,
+                             items: [String: MobileAlbumManifest]) throws {
+            guard choice.duplicates >= 0, choice.deferred >= 0,
+                  choice.pending.count <= page.assets.count,
+                  choice.duplicates <= page.assets.count, choice.deferred <= page.assets.count,
+                  choice.pending.count + choice.duplicates + choice.deferred == page.assets.count else { throw MediaError193.changed }
+            let wanted = try MobileAlbumTransfer.requested(choice.pending, items: items)
+            duplicates += choice.duplicates
+            deferred += choice.deferred
+            for id in wanted {
+                guard let item = items[id] else { throw MediaError193.changed }
+                if !originals.insert(item.transferKey).inserted { duplicates += 1; continue }
+                guard item.byteCount <= maximumOriginalBytes - bytes else { throw MediaError193.tooLarge }
+                bytes += item.byteCount; pending += 1; approved[id] = item.transferKey
+            }
+        }
+
+        func allows(_ item: MobileAlbumManifest) -> Bool { approved[item.id] == item.transferKey }
+    }
+
+    static func previewSend(_ source: Source, channel: Channel) async throws -> PreviewTotals {
+        let count = source.count
+        guard (0...maximumCount).contains(count), (0...(maximumCount - count)).contains(source.unavailable)
+              else { throw MediaError193.tooLarge }
+        try await channel.sendObject(1, ["op": "album-preview-open1", "count": count, "unavailable": source.unavailable])
+        _ = try await expect(channel, kind: 2, operation: "album-preview-ready1")
+        var totals = PreviewTotals(), seen = Set<String>(), pages = Set<String>()
+        totals.deferred = source.unavailable
+        while let page = try await source.nextPage() {
+            try verify(page, count: count, seen: &seen, pages: &pages)
+            let body = try JSONSerialization.jsonObject(with: JSONEncoder().encode(page))
+            try await channel.sendObject(1, packetFor("album-preview-page1", page: page.id, fields: ["manifest": body]))
+            let response = try await expect(channel, kind: 2, operation: "album-preview-result1", page: page.id)
+            guard let pending = response["assets"] as? [String], let duplicate = response["duplicates"] as? Int,
+                  let deferred = response["deferred"] as? Int else { throw MediaError193.malformed }
+            let items = Dictionary(uniqueKeysWithValues: page.assets.map { ($0.id, $0) })
+            try totals.record(.init(pending: pending, duplicates: duplicate, deferred: deferred), page: page, items: items)
+        }
+        guard seen.count == count else { throw MediaError193.changed }
+        try await channel.sendObject(1, ["op": "album-preview-end1"])
+        _ = try await expect(channel, kind: 2, operation: "album-preview-ok1")
+        return totals
+    }
+
+    static func previewReceive(_ target: PhotoAlbumTarget, channel: Channel) async throws -> PreviewTotals {
+        let open = try await expect(channel, kind: 1, operation: "album-preview-open1")
+        guard let count = open["count"] as? Int, (0...maximumCount).contains(count),
+              let unavailable = open["unavailable"] as? Int, (0...(maximumCount - count)).contains(unavailable)
+              else { throw MediaError193.malformed }
+        try await withWaiting(channel) { try await target.start(count: count, unavailable: unavailable) }
+        try await channel.sendObject(2, ["op": "album-preview-ready1"])
+        var totals = PreviewTotals(), seen = Set<String>(), pages = Set<String>()
+        totals.deferred = unavailable
+        while true {
+            let packet = try await channel.receiveObject(1)
+            if packet["op"] as? String == "album-preview-end1" {
+                guard seen.count == count else { throw MediaError193.changed }
+                try await channel.sendObject(2, ["op": "album-preview-ok1"])
+                return totals
+            }
+            guard packet["op"] as? String == "album-preview-page1", let body = packet["manifest"],
+                  JSONSerialization.isValidJSONObject(body) else { throw MediaError193.malformed }
+            let page = try JSONDecoder().decode(MobileAlbumManifest.Page.self, from: JSONSerialization.data(withJSONObject: body))
+            guard packet["batch"] as? String == page.id else { throw MediaError193.changed }
+            try verify(page, count: count, seen: &seen, pages: &pages)
+            let items = Dictionary(uniqueKeysWithValues: page.assets.map { ($0.id, $0) })
+            let choice = try target.preview(page)
+            try totals.record(choice, page: page, items: items)
+            try await channel.sendObject(2, packetFor("album-preview-result1", page: page.id, fields: [
+                "assets": choice.pending, "duplicates": choice.duplicates, "deferred": choice.deferred]))
         }
     }
 

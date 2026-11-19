@@ -10,6 +10,7 @@ enum AppleSyncTransport {
     static let sessionLimit: UInt64 = 128 * 1024 * 1024 * 1024
 
     enum Failure: Error {
+        case receiver(String)
         case address, certificate, timeout, malformed, declined, changedPeer, authentication, closed
         case rejected(String)
         case identityMismatch(String)
@@ -329,7 +330,12 @@ enum AppleSyncTransport {
             for _ in 0..<(ordinaryAlbumTransfer ? 540 : 180) {
                 let result = try await receiveRaw()
                 if result.kind != 8 { return result }
-                guard result.data == Data("waiting173".utf8) else { throw Failure.malformed }
+                if result.data == Data("waiting173".utf8) { continue }
+                if ordinaryAlbumTransfer, let code = String(data: result.data, encoding: .utf8),
+                   ["album-error-space1", "album-error-storage1", "album-error-verify1", "album-error-access1", "album-error-plan1", "album-error-io1"].contains(code) {
+                    throw Failure.receiver(code)
+                }
+                throw Failure.malformed
             }
             socket.cancel()
             throw Failure.timeout

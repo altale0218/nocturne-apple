@@ -346,6 +346,28 @@ final class PhotoAlbumTarget: MobileAlbumTransfer.Target {
         }
     }
 
+    // Preview never calls receive(), links an archive, or changes the Photos library.
+    func preview(_ page: MobileAlbumManifest.Page) throws -> MobileAlbumTransfer.PreviewSelection {
+        try storage.validateResourceLease193(lease)
+        var pending: [String] = []
+        var duplicate = 0
+        var deferred = 0
+        for item in page.assets {
+            try Task.checkCancellation()
+            if index.containsOriginal(item) {
+                duplicate += 1
+            } else if item.captureMillis == nil
+                        || (item.layout != .motion && !PHAssetCreationRequest.supportsAssetResourceTypes(item.resources.map { NSNumber(value: $0.role) })) {
+                deferred += 1
+            } else if try library.receipt(peer: peer, remoteID: item.id, lease: lease) != nil {
+                deferred += 1
+            } else {
+                pending.append(item.id)
+            }
+        }
+        return .init(pending: pending, duplicates: duplicate, deferred: deferred)
+    }
+
     func plan(_ page: MobileAlbumManifest.Page) async throws -> [String] {
         confirmed.removeAll(keepingCapacity: true)
         deferred.removeAll(keepingCapacity: true)
