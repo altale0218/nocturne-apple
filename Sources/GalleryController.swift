@@ -414,7 +414,8 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
             action("显示观看次数", "eye", p.showViews) { $0.showViews.toggle() },
             action("实时视频预览", "play.rectangle", p.previewVideos) { $0.previewVideos.toggle() }
         ])
-        return [modes, sizes, sorting, toggles]
+        let selection = UIAction(title: "多选项目", image: UIImage(systemName: "checkmark.circle")) { [weak self] _ in self?.beginSelection193() }
+        return [modes, sizes, sorting, toggles, selection]
     }
 
     @objc private func chooseMode() {
@@ -590,7 +591,6 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         sidebarRows193 = pages.map { id, label, icon in
             (label, icon, { [weak self] in self?.filter = id; self?.reload() })
         }
-        sidebarRows193.append(("多选项目", "checkmark.circle", { [weak self] in self?.beginSelection193() }))
         if privateMode {
             sidebarRows193.append(("查找 Private 重复项目", "square.on.square", { [weak self] in
                 self?.showPrivateDuplicates204()
@@ -850,7 +850,22 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
               !(filter == "star" && layout.mode == .tiles), indexPaths.count == 1,
               let indexPath = indexPaths.first, shown.indices.contains(indexPath.item) else { return nil }
         let assetID = shown[indexPath.item].localIdentifier
-        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+        let thumbnail = (collectionView.cellForItem(at: indexPath) as? MediaCell)?.image.image
+        let size = min(collectionView.bounds.width - 32, 440)
+        let preview: UIContextMenuContentPreviewProvider? = thumbnail.map { image in
+            return {
+                guard size > 0, image.size.width > 0, image.size.height > 0 else { return nil }
+                let ratio = image.size.width / image.size.height
+                let controller = UIViewController()
+                let photo = UIImageView(image: image)
+                photo.contentMode = .scaleAspectFit
+                photo.backgroundColor = .secondarySystemBackground
+                controller.view = photo
+                controller.preferredContentSize = CGSize(width: min(size, size * ratio), height: min(size, size / ratio))
+                return controller
+            }
+        }
+        return UIContextMenuConfiguration(identifier: nil, previewProvider: preview) { [weak self] _ in
             let select = UIAction(title: "多选", image: UIImage(systemName: "checkmark.circle")) { [weak self] _ in
                 guard let self, !self.pinchInProgress, !self.deleting193,
                       let index = self.shown.firstIndex(where: { $0.localIdentifier == assetID }) else { return }
@@ -859,8 +874,31 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
                 self.collection.selectItem(at: path, animated: false, scrollPosition: [])
                 self.collectionView(self.collection, didSelectItemAt: path)
             }
-            return UIMenu(children: [select])
+            let open = UIAction(title: "打开", image: UIImage(systemName: "arrow.up.left.and.arrow.down.right")) { [weak self] _ in
+                guard let self, let path = self.menuPath193(assetID) else { return }
+                self.collectionView(self.collection, didSelectItemAt: path)
+            }
+            let favorite = self?.storage.state.records[assetID]?.favorite == true
+            let like = UIAction(title: favorite ? "取消喜爱" : "加入喜爱", image: UIImage(systemName: favorite ? "heart.slash" : "heart")) { [weak self] _ in
+                guard let self, self.menuPath193(assetID) != nil else { return }
+                self.storage.update { state in
+                    var record = state.records[assetID] ?? MediaRecord()
+                    record.favorite.toggle()
+                    state.records[assetID] = record
+                }
+                do { try self.storage.save(); self.reload() } catch { self.selectionFailure193(error) }
+            }
+            let delete = UIAction(title: "删除", image: UIImage(systemName: "trash"), attributes: .destructive) { [weak self] _ in
+                guard let self, let path = self.menuPath193(assetID) else { return }
+                self.confirmDelete193([self.shown[path.item]])
+            }
+            return UIMenu(children: [open, like, select, delete])
         }
+    }
+    private func menuPath193(_ assetID: String) -> IndexPath? {
+        guard viewIfLoaded?.window != nil, storage.isUnlocked193, !pinchInProgress, !deleting193,
+              let index = shown.firstIndex(where: { $0.localIdentifier == assetID }) else { return nil }
+        return IndexPath(item: index, section: 0)
     }
     private func selectionMenu193() {
         guard !selected193.isEmpty, !deleting193 else { return }
@@ -873,7 +911,10 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         alert.addAction(UIAlertAction(title: "取消", style: .cancel)); anchor(alert); present(alert, animated: true)
     }
     private func confirmBatchDelete193() {
-        let values = shown.filter { selected193.contains($0.localIdentifier) }
+        confirmDelete193(shown.filter { selected193.contains($0.localIdentifier) })
+    }
+    private func confirmDelete193(_ values: [MediaAsset193]) {
+        guard !values.isEmpty, !deleting193 else { return }
         let nativeCount = values.filter { $0.native != nil }.count
         let alert = UIAlertController(title: "删除 \(values.count) 个项目？", message: nativeCount > 0 ? "系统图库项目还需通过苹果相册的删除确认。应用内加密副本仅删除应用保存的内容。" : "仅删除应用内加密副本，不删除系统相册或其他导入原件。", preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))

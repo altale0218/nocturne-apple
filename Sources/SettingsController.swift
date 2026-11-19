@@ -1,4 +1,6 @@
 import UIKit
+import CryptoKit
+import Security
 
 final class SettingsController: UITableViewController, UIAdaptivePresentationControllerDelegate, UISearchResultsUpdating {
     let storage: SecureStorage
@@ -199,7 +201,7 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         case "mode": changeMode()
         case "boundary": message(label(id), Strings.text("缓存始终经过认证加密。Private 增加每次开启的密码验证，影响解锁耗时；不会逐帧验证密码或降低原片分辨率。系统相册中的原片仍由系统管理，不会因为开启 Private 自动隐藏或加密复制。本工程未经过安全审计。", "Caches always use authenticated encryption. Private adds startup password verification, affecting unlock time, not per-frame playback or original resolution. Originals in Photos remain managed by the system and are not hidden or copied by enabling Private. This engineering preview has not had a security audit.", "キャッシュは常に認証付き暗号化。Private は起動時のパスワード検証を追加し、解除時間に影響します。フレーム処理や元画像の解像度は変えません。システム写真の元ファイルは自動的に非表示や複製になりません。セキュリティ監査は未実施です。", "快取始終使用驗證加密。Private 增加啟動密碼驗證，影響解鎖時間，不影響逐幀播放與原片解析度。系統相簿原片不會自動隱藏或加密複製。本工程未經安全審計。"))
         case "crashReport": if #available(iOS 15, *) { CrashReports209.shared.present(from: self) }
-        case "release": showReleaseNotes()
+        case "release": if !storage.envelope.privateMode { navigationController?.pushViewController(AppleUpdateController(), animated: true) } else { showReleaseNotes() }
         default: break
         }
     }
@@ -335,5 +337,326 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
     }
     @objc private func done() {
         dismiss(animated: true) { self.refreshGalleryIfNeeded() }
+    }
+}
+
+
+
+
+private enum AppleUpdateSource: String, CaseIterable, Sendable {
+    case cloudflare, gitee, github
+    var label: String {
+        switch self { case .cloudflare: return "Cloudflare"; case .gitee: return "Gitee"; case .github: return "GitHub" }
+    }
+    var icon: String {
+        switch self { case .cloudflare: return "cloud.fill"; case .gitee: return "chevron.left.forwardslash.chevron.right"; case .github: return "point.3.connected.trianglepath.dotted" }
+    }
+    private static let giteeAPI = "https://gitee.com/api/v5/repos/altalatic/nocturne-releases/releases"
+    func permits(_ url: URL, redirect: Bool) -> Bool {
+        guard url.scheme == "https", let host = url.host, url.port == nil || url.port == 443,
+              url.user == nil, url.password == nil, url.fragment == nil else { return false }
+        switch self {
+        case .cloudflare:
+            return host == "nocturne-updates.pages.dev" && url.query == nil
+                && (url.path == "/releases/apple.json" || url.path.range(of: #"^/packages/apple/[1-9][0-9]*-[0-9a-f]{64}\.ipa$"#, options: .regularExpression) != nil)
+        case .github:
+            if redirect && ["release-assets.githubusercontent.com", "objects.githubusercontent.com"].contains(host) { return true }
+            return host == "github.com" && url.query == nil
+                && url.path.hasPrefix("/altale0218/nocturne-releases/releases/download/")
+        case .gitee:
+            if redirect && host == "foruda.gitee.com" { return true }
+            return host == "gitee.com" && url.query == nil
+                && url.path.hasPrefix("/api/v5/repos/altalatic/nocturne-releases/releases/")
+        }
+    }
+
+    func catalogURL() async throws -> URL {
+        switch self {
+        case .cloudflare:
+            return URL(string: "https://nocturne-updates.pages.dev/releases/apple.json")!
+        case .github:
+            return URL(string: "https://github.com/altale0218/nocturne-releases/releases/download/ota-catalog/apple.json")!
+        case .gitee:
+            let tag = URL(string: Self.giteeAPI + "/tags/apple-ota-catalog")!
+            let body = try await AppleUpdateNetwork.read(tag, source: self)
+            let release = try JSONDecoder().decode(GiteeRelease.self, from: body)
+            guard release.id > 0 else { throw AppleUpdateNetwork.Invalid.catalog }
+            let list = URL(string: Self.giteeAPI + "/\(release.id)/attach_files")!
+            let result = try await AppleUpdateNetwork.read(list, source: self)
+            let assets = try JSONDecoder().decode([GiteeAsset].self, from: result).filter { $0.name == "apple.json" }
+            guard assets.count == 1, let asset = assets.first, asset.id > 0 else { throw AppleUpdateNetwork.Invalid.catalog }
+            return URL(string: Self.giteeAPI + "/\(release.id)/attach_files/\(asset.id)/download")!
+        }
+    }
+    private struct GiteeRelease: Decodable { let id: Int64 }
+    private struct GiteeAsset: Decodable { let id: Int64; let name: String }
+}
+
+private enum AppleUpdateNetwork {
+    enum Invalid: Error { case catalog, endpoint, package }
+    private static let publisher = "ae3b0557e3f11a0927212bb49c2d2e7a70db33e842dfce04dec616f2276a57e2"
+    private static let catalogLimit = 128 * 1024
+    private static let packageLimit: Int64 = 512 * 1024 * 1024
+    private struct Catalog: Decodable { let schema: Int; let ready: Bool; let releases: [Proof] }
+    private struct Proof: Decodable { let payload: String; let signature: String; let certificate: String }
+
+    struct Offer: Decodable, Sendable {
+        let schema: Int, kind: String, bundle: String, version: String, channel: String
+        let build: Int, size: Int64, sha256: String, notes: String
+        let downloads: [String: URL]
+        var fileName: String { "Nocturne-iOS-\(version)-\(build)\(channel == "beta" ? "-beta" : "").ipa" }
+    }
+
+    private final class Redirect: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        let source: AppleUpdateSource
+        init(_ source: AppleUpdateSource) { self.source = source }
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+            completionHandler(request.url.map { source.permits($0, redirect: true) } == true ? request : nil)
+        }
+    }
+
+    private static func connection(_ source: AppleUpdateSource) -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.httpShouldSetCookies = false
+        config.urlCache = nil
+        config.timeoutIntervalForRequest = 14
+        config.timeoutIntervalForResource = 300
+        return URLSession(configuration: config, delegate: Redirect(source), delegateQueue: nil)
+    }
+
+    static func read(_ url: URL, source: AppleUpdateSource) async throws -> Data {
+        guard source.permits(url, redirect: false) else { throw Invalid.endpoint }
+        let session = connection(source)
+        defer { session.finishTasksAndInvalidate() }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
+        request.setValue("application/json, application/octet-stream", forHTTPHeaderField: "Accept")
+        let (bytes, response) = try await session.bytes(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+              let final = http.url, source.permits(final, redirect: true),
+              http.expectedContentLength <= Int64(catalogLimit) else { throw Invalid.endpoint }
+        var content = Data()
+        for try await byte in bytes {
+            guard content.count < catalogLimit else { throw Invalid.catalog }
+            content.append(byte)
+        }
+        return content
+    }
+
+    static func check(_ source: AppleUpdateSource, installed: Int, beta: Bool) async throws -> Offer? {
+        let url = try await source.catalogURL()
+        let data = try await read(url, source: source)
+        let catalog = try JSONDecoder().decode(Catalog.self, from: data)
+        guard catalog.schema == 1, catalog.ready, catalog.releases.count <= 8, !catalog.releases.isEmpty else { throw Invalid.catalog }
+        let offers = try catalog.releases.map(validate)
+        return offers.filter { $0.build > installed && ($0.channel == "stable" || beta) && $0.downloads[source.rawValue] != nil }
+            .max { $0.build < $1.build }
+    }
+
+    private static func validate(_ proof: Proof) throws -> Offer {
+        guard let cert = Data(base64Encoded: proof.certificate),
+              AppleSyncTransport.hex(Data(SHA256.hash(data: cert))) == publisher,
+              let certificate = SecCertificateCreateWithData(nil, cert as CFData),
+              let key = SecCertificateCopyKey(certificate),
+              let payload = Data(base64Encoded: proof.payload), payload.count <= 18_000,
+              let signature = Data(base64Encoded: proof.signature),
+              SecKeyVerifySignature(key, .rsaSignatureMessagePKCS1v15SHA256, payload as CFData, signature as CFData, nil)
+              else { throw Invalid.catalog }
+        let offer = try JSONDecoder().decode(Offer.self, from: payload)
+        guard offer.schema == 1, offer.kind == "apple", offer.bundle == Bundle.main.bundleIdentifier,
+              [ "stable", "beta" ].contains(offer.channel), (1...1_000_000).contains(offer.build),
+              offer.version.range(of: #"^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$"#, options: .regularExpression) != nil,
+              offer.sha256.range(of: #"^[a-f0-9]{64}$"#, options: .regularExpression) != nil,
+              (1...packageLimit).contains(offer.size), offer.notes.utf8.count <= 8_000, !offer.downloads.isEmpty
+              else { throw Invalid.catalog }
+        for (name, url) in offer.downloads {
+            guard let source = AppleUpdateSource(rawValue: name), source.permits(url, redirect: false) else { throw Invalid.endpoint }
+            if source == .cloudflare, url.path != "/packages/apple/\(offer.build)-\(offer.sha256).ipa" { throw Invalid.endpoint }
+        }
+        return offer
+    }
+
+    static func save(_ offer: Offer, source: AppleUpdateSource) async throws -> URL {
+        guard let url = offer.downloads[source.rawValue], source.permits(url, redirect: false) else { throw Invalid.endpoint }
+        let session = connection(source)
+        defer { session.finishTasksAndInvalidate() }
+        let (temp, response) = try await session.download(from: url)
+        let files = FileManager.default
+        defer { try? files.removeItem(at: temp) }
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+              let final = http.url, source.permits(final, redirect: true),
+              let size = try files.attributesOfItem(atPath: temp.path)[.size] as? NSNumber,
+              size.int64Value == offer.size else { throw Invalid.package }
+        let handle = try FileHandle(forReadingFrom: temp)
+        defer { try? handle.close() }
+        var hash = SHA256()
+        while let chunk = try handle.read(upToCount: 512 * 1024), !chunk.isEmpty {
+            try Task.checkCancellation()
+            hash.update(data: chunk)
+        }
+        guard AppleSyncTransport.hex(Data(hash.finalize())) == offer.sha256 else { throw Invalid.package }
+        try Task.checkCancellation()
+        let folder = try files.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+            .appendingPathComponent("VerifiedUpdates/\(offer.sha256)", isDirectory: true)
+        try files.createDirectory(at: folder, withIntermediateDirectories: true)
+        let local = folder.appendingPathComponent(offer.fileName)
+        if files.fileExists(atPath: local.path) { try files.replaceItem(at: local, withItemAt: temp) }
+        else { try files.moveItem(at: temp, to: local) }
+        return local
+    }
+}
+
+@MainActor private final class AppleUpdateController: UITableViewController {
+    private var channel = UserDefaults.standard.bool(forKey: "update.beta")
+    private var source = UserDefaults.standard.string(forKey: "update.source") ?? "auto"
+    private var active: Task<Void, Never>?
+    private var generation = 0
+    private var offer: (AppleUpdateNetwork.Offer, AppleUpdateSource)?
+    private var local: URL?
+    private var status = "检查云端软件更新"
+    private var spinning = false
+    private var downloading = false
+
+    init() { super.init(style: .insetGrouped) }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "软件更新"
+        check()
+    }
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        if isMovingFromParent || navigationController?.isBeingDismissed == true { active?.cancel(); generation += 1 }
+    }
+    override func numberOfSections(in tableView: UITableView) -> Int { 3 }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { [3, 3, 2][section] }
+    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? { ["当前版本","云端更新","更新日志"][section] }
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
+        cell.textLabel?.numberOfLines = 0
+        cell.detailTextLabel?.numberOfLines = 0
+        var title = "", symbol = "", subtitle: String?
+        var interactive = true
+        switch (indexPath.section, indexPath.row) {
+        case (0,0): title = "Nocturne · \(Release.version)"; subtitle = "Build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")"; symbol = "app.badge.checkmark"; interactive = false
+        case (0,1):
+            title = "接收测试版更新"; symbol = "testtube.2"; interactive = false
+            let control = UISwitch(); control.isOn = channel; control.isEnabled = !downloading
+            control.addTarget(self, action: #selector(changeChannel(_:)), for: .valueChanged); cell.accessoryView = control
+        case (0,2):
+            let selected = AppleUpdateSource(rawValue: source)
+            title = "更新源"; subtitle = selected?.label ?? "自动选择 · Cloudflare / Gitee / GitHub"; symbol = selected?.icon ?? "arrow.triangle.branch"; interactive = !downloading
+        case (1,0):
+            title = status; interactive = false
+            if spinning { let spinner = UIActivityIndicatorView(style: .medium); spinner.startAnimating(); cell.accessoryView = spinner }
+        case (1,1): title = "检查更新"; symbol = "arrow.clockwise"; interactive = !downloading
+        case (1,2):
+            title = local == nil ? "下载更新" : "另存到文件"
+            subtitle = offer.map { ($0.0.channel == "beta" ? "测试版" : "正式版") + " · " + $0.0.version + " · " + $0.1.label }
+            symbol = local == nil ? "arrow.down.circle" : "folder"; interactive = offer != nil && !downloading
+        case (2,0): title = "当前版本日志"; symbol = "doc.text"
+        default: title = "历史版本日志"; symbol = "clock.arrow.circlepath"
+        }
+        cell.textLabel?.text = title
+        cell.detailTextLabel?.text = subtitle
+        cell.imageView?.image = UIImage(systemName: symbol)
+        if interactive { cell.accessoryType = .disclosureIndicator } else { cell.selectionStyle = .none }
+        return cell
+    }
+    override func tableView(_ tableView: UITableView, didSelectRowAt path: IndexPath) {
+        tableView.deselectRow(at: path, animated: true)
+        switch (path.section, path.row) {
+        case (0,2): if !downloading { selectSource() }
+        case (1,1): if !downloading { check() }
+        case (1,2): if !downloading { confirmDownload() }
+        case (2,0): message("当前版本", Release.notes)
+        case (2,1): message("历史版本", Release.history)
+        default: break
+        }
+    }
+    @objc private func changeChannel(_ control: UISwitch) {
+        channel = control.isOn; UserDefaults.standard.set(channel, forKey: "update.beta"); check()
+    }
+    private func selectSource() {
+        let dialog = UIAlertController(title: "更新源", message: nil, preferredStyle: .alert)
+        for (key, label) in [("auto", "自动选择")] + AppleUpdateSource.allCases.map({ ($0.rawValue, $0.label) }) {
+            dialog.addAction(UIAlertAction(title: (source == key ? "✓  " : "") + label, style: .default) { [weak self] _ in
+                guard let self else { return }
+                self.source = key; UserDefaults.standard.set(key, forKey: "update.source"); self.check()
+            })
+        }
+        dialog.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(dialog, animated: true)
+    }
+    private struct Result: Sendable {
+        let source: AppleUpdateSource, offer: AppleUpdateNetwork.Offer?, succeeded: Bool
+    }
+    private func check() {
+        active?.cancel(); generation += 1
+        let attempt = generation, beta = channel
+        let installed = Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0
+        let targets = AppleUpdateSource(rawValue: source).map { [$0] } ?? AppleUpdateSource.allCases
+        local = nil; offer = nil; spinning = true
+        status = targets.count > 1 ? "正在检查 Cloudflare、Gitee 和 GitHub…" : "正在通过 \(targets[0].label) 检查更新…"
+        tableView.reloadData()
+        active = Task { [weak self] in
+            await withTaskGroup(of: Result.self) { group in
+                for target in targets {
+                    group.addTask {
+                        do { return Result(source: target, offer: try await AppleUpdateNetwork.check(target, installed: installed, beta: beta), succeeded: true) }
+                        catch { return Result(source: target, offer: nil, succeeded: false) }
+                    }
+                }
+                var tested = 0, succeeded = 0
+                for await result in group {
+                    guard let self, !Task.isCancelled, self.generation == attempt else { group.cancelAll(); return }
+                    tested += 1
+                    if result.succeeded { succeeded += 1 }
+                    if let candidate = result.offer, candidate.build > (self.offer?.0.build ?? installed) { self.offer = (candidate, result.source) }
+                    self.spinning = tested < targets.count
+                    if let current = self.offer { self.status = "发现\(current.0.channel == "beta" ? "测试版" : "正式版") · \(current.0.version)" }
+                    else if succeeded > 0 { self.status = "已是最新版本" }
+                    else if !self.spinning { self.status = "更新源暂不可用，请稍后重试" }
+                    self.tableView.reloadData()
+                }
+            }
+        }
+    }
+    private func confirmDownload() {
+        if let local { export(local); return }
+        guard let offer else { return }
+        let kind = offer.0.channel == "beta" ? "测试版" : "正式版"
+        let size = ByteCountFormatter.string(fromByteCount: offer.0.size, countStyle: .file)
+        let dialog = UIAlertController(title: "下载 \(kind) \(offer.0.version)",
+            message: "\(offer.1.label) · \(size)\n\n\(offer.0.notes)\n\n下载后可存入「文件」，再用 AltStore 等已配置的工具签名安装。", preferredStyle: .alert)
+        dialog.addAction(UIAlertAction(title: "取消", style: .cancel))
+        dialog.addAction(UIAlertAction(title: "下载更新", style: .default) { [weak self] _ in self?.download(offer) })
+        present(dialog, animated: true)
+    }
+    private func download(_ chosen: (AppleUpdateNetwork.Offer, AppleUpdateSource)) {
+        active?.cancel(); generation += 1
+        let attempt = generation
+        downloading = true; spinning = true; status = "正在下载并校验安装包…"; tableView.reloadData()
+        active = Task { [weak self] in
+            do {
+                let url = try await AppleUpdateNetwork.save(chosen.0, source: chosen.1)
+                guard let self, self.generation == attempt, !Task.isCancelled else { return }
+                self.local = url
+                self.status = "安装包已校验，可存入「文件」"
+            } catch {
+                guard let self, self.generation == attempt, !Task.isCancelled else { return }
+                self.status = "下载或校验失败，请重新检查更新"
+            }
+            guard let self, self.generation == attempt, !Task.isCancelled else { return }
+            self.downloading = false; self.spinning = false; self.tableView.reloadData()
+            if let local = self.local, self.viewIfLoaded?.window != nil { self.export(local) }
+        }
+    }
+    private func export(_ url: URL) {
+        present(UIDocumentPickerViewController(forExporting: [url], asCopy: true), animated: true)
+    }
+    private func message(_ title: String, _ text: String) {
+        let dialog = UIAlertController(title: title, message: text, preferredStyle: .alert)
+        dialog.addAction(UIAlertAction(title: "好", style: .cancel)); present(dialog, animated: true)
     }
 }
