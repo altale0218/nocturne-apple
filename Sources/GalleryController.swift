@@ -78,8 +78,13 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         titleLabel.font = .systemFont(ofSize: 20, weight: .semibold); titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); toolbar.addArrangedSubview(titleLabel)
         let mode = Theme.button("ellipsis", target: self, action: #selector(chooseMode)); mode.widthAnchor.constraint(equalToConstant: 44).isActive = true; toolbar.addArrangedSubview(mode)
         let sync = Theme.button("ellipsis", target: self, action: #selector(synchronize)); sync.widthAnchor.constraint(equalToConstant: 44).isActive = true; toolbar.addArrangedSubview(sync)
+        for button in [mode, sync] {
+            button.heightAnchor.constraint(equalToConstant: 44).isActive = true
+            button.layer.cornerRadius = 22
+            button.clipsToBounds = true
+        }
         toolbarGlass193.contentView.addSubview(toolbar); foreground.addSubview(toolbarGlass193); foreground.addSubview(panel)
-        if #available(iOS 15, *) { for case let button as UIButton in toolbar.arrangedSubviews { var plain = UIButton.Configuration.plain(); plain.image = button.image(for: .normal); button.configuration = plain } }
+        if #available(iOS 15, *) { for case let button as UIButton in toolbar.arrangedSubviews { var plain = UIButton.Configuration.plain(); plain.image = button.image(for: .normal); plain.cornerStyle = .capsule; button.configuration = plain } }
         repository.changed = { [weak self] in self?.reload() }
         repository.progress = { [weak self] value, message in self?.panel.update(value, message: message) }
         applyTheme(); reload()

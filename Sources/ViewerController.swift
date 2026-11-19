@@ -44,6 +44,8 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
     private var adjacentPreview: DispatchWorkItem?
     private var backdropWork: DispatchWorkItem?
     private weak var liveButton199: UIButton?
+    private var liveAvailable199: Bool?
+    private var stripCarry199: CGFloat = 0
     private var liveStop199: DispatchWorkItem?
     private let stripFeedback199 = UISelectionFeedbackGenerator()
     private var swipeDown199 = false
@@ -93,6 +95,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
             var plain = UIButton.Configuration.plain()
             plain.image = UIImage(systemName: "ellipsis", withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold))
             plain.baseForegroundColor = .white
+            plain.cornerStyle = .capsule
             more.configuration = plain
         }
         stage.addSubview(chrome)
@@ -125,6 +128,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         let live = Theme.button("livephoto", target: self, action: #selector(toggleLive199))
         live.accessibilityLabel = "播放实况照片"
         liveButton199 = live
+        live.isHidden = true
         for button in [live, favorite!] {
             button.backgroundColor = UIColor(white: 0.15, alpha: 0.46)
             button.layer.cornerRadius = 24
@@ -133,7 +137,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         }
         controls.addSubview(actions); view.addSubview(controls)
         let stripLayout = UICollectionViewFlowLayout(); stripLayout.scrollDirection = .horizontal; stripLayout.minimumLineSpacing = stripSpacing; stripLayout.itemSize = CGSize(width: stripItemWidth, height: 52)
-        strip = UICollectionView(frame: .zero, collectionViewLayout: stripLayout); strip.backgroundColor = .clear; strip.dataSource = self; strip.delegate = self; strip.showsHorizontalScrollIndicator = false; strip.decelerationRate = .fast
+        strip = UICollectionView(frame: .zero, collectionViewLayout: stripLayout); strip.backgroundColor = .clear; strip.dataSource = self; strip.delegate = self; strip.showsHorizontalScrollIndicator = false; strip.decelerationRate = .normal
         strip.register(MediaCell.self, forCellWithReuseIdentifier: MediaCell.reuse); controls.addSubview(strip)
         let doubleTap = UITapGestureRecognizer(target: self, action: #selector(doubleTapped(_:))); doubleTap.numberOfTapsRequired = 2; zoom.addGestureRecognizer(doubleTap)
         let tap = UITapGestureRecognizer(target: self, action: #selector(toggleControls)); tap.require(toFail: doubleTap); zoom.addGestureRecognizer(tap)
@@ -211,7 +215,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.075, execute: refresh)
             } }
         let video = asset.mediaType == .video
-        liveButton199?.isHidden = !asset.mediaSubtypes.contains(.photoLive)
+        updateLiveButton199(asset.mediaSubtypes.contains(.photoLive))
         timeline.isHidden = !video; play.isHidden = !video; actions.arrangedSubviews[0].isHidden = !video; actions.arrangedSubviews[1].isHidden = !video; jump.isHidden = !video
         for case let cell as MediaCell in strip.visibleCells {
             cell.contentView.layer.borderWidth = strip.indexPath(for: cell)?.item == index ? 2 : 0
@@ -716,11 +720,14 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         let now = CACurrentMediaTime()
         let sign: CGFloat = velocity.x < 0 ? -1 : 1
         stripFlingBoost = now - lastStripFling < 0.7 && sign == lastStripDirection ? min(2.8, stripFlingBoost + 0.55) : 1
+        let elapsed = now - lastStripFling
         lastStripDirection = sign
         lastStripFling = now
         let step = stripItemWidth + stripSpacing
-        let additional = min(24 * step, abs(velocity.x) * step * 1.5 * stripFlingBoost)
-        let projected = (targetContentOffset.pointee.x + sign * additional) / step
+        let base = abs(velocity.x) * step * 2.2
+        let residual = stripFlingBoost > 1 ? stripCarry199 * CGFloat(exp(-max(0, elapsed) * 2.6)) * 0.72 : 0
+        stripCarry199 = min(32 * step, base + residual)
+        let projected = (targetContentOffset.pointee.x + sign * stripCarry199) / step
         targetContentOffset.pointee.x = min(CGFloat(assets.count - 1), max(0, projected.rounded())) * step
     }
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
@@ -737,17 +744,54 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         guard !assets.isEmpty, !closing199 else { return }
         let index = min(assets.count - 1, max(0, Int((strip.contentOffset.x / (stripItemWidth + stripSpacing)).rounded())))
         guard index != selected else { return }
-        stripFeedback199.selectionChanged()
-        stripFeedback199.prepare()
-        stripCommit?.cancel()
-        stripPreview = true
-        show(index, count: false, centerStrip: false, posterOnly: true)
-        let commit = DispatchWorkItem { [weak self] in
-            guard let self = self, !self.strip.isTracking, !self.strip.isDragging, !self.strip.isDecelerating else { return }
-            self.finishStripSelection()
+        if !stripPreview {
+            stripCommit?.cancel()
+            stripPreview = true
+            stopPlayer()
+            zoom.setZoomScale(1, animated: false)
+            repository.manager.cancelImageRequest(request)
+            backdropWork?.cancel(); adjacentPreview?.cancel()
+            precision.isHidden = true
         }
-        stripCommit = commit
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.10, execute: commit)
+        let old = selected
+        selected = index
+        generation += 1
+        let token = generation, asset = assets[index]
+        stripFeedback199.selectionChanged()
+        for (item, border) in [(old, CGFloat(0)), (index, CGFloat(2))] {
+            strip.cellForItem(at: IndexPath(item: item, section: 0))?.contentView.layer.borderWidth = border
+        }
+        if let cell = strip.cellForItem(at: IndexPath(item: index, section: 0)) as? MediaCell,
+           cell.represented == asset.localIdentifier, let poster = cell.image.image { image.image = poster }
+        else {
+            repository.thumbnail(asset, pixels: 160) { [weak self] poster in
+                guard let self, self.generation == token, let poster else { return }
+                self.image.image = poster
+            }
+        }
+        updateLiveButton199(asset.mediaSubtypes.contains(.photoLive))
+    }
+    private func updateLiveButton199(_ available: Bool) {
+        guard let button = liveButton199, liveAvailable199 != available else { return }
+        let initial = liveAvailable199 == nil
+        liveAvailable199 = available
+        button.isUserInteractionEnabled = available
+        button.accessibilityElementsHidden = !available
+        if initial || storage.state.settings.reducedMotion || UIAccessibility.isReduceMotionEnabled {
+            button.isHidden = !available; button.alpha = available ? 1 : 0; button.transform = .identity
+            return
+        }
+        if available && button.isHidden {
+            button.alpha = 0; button.transform = CGAffineTransform(scaleX: 0.78, y: 0.78); button.isHidden = false
+        }
+        UIView.animate(withDuration: available ? 0.22 : 0.16, delay: 0,
+                       options: [.beginFromCurrentState, .allowUserInteraction, .curveEaseInOut],
+                       animations: {
+            button.alpha = available ? 1 : 0
+            button.transform = available ? .identity : CGAffineTransform(scaleX: 0.78, y: 0.78)
+        }) { [weak self, weak button] _ in
+            if self?.liveAvailable199 == false { button?.isHidden = true }
+        }
     }
     private func finishStripSelection() {
         guard stripPreview, !closing199 else { return }

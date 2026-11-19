@@ -2,23 +2,26 @@ import UIKit
 import CryptoKit
 import Security
 
-final class SettingsController: UITableViewController, UIAdaptivePresentationControllerDelegate, UISearchResultsUpdating {
+final class SettingsController: UITableViewController, UIAdaptivePresentationControllerDelegate, UISearchResultsUpdating, UISearchControllerDelegate {
     let storage: SecureStorage
     var changed: (() -> Void)?, modeChanged: (() -> Void)?
     private var sections: [[String]] = []
     private var titles: [String] = []
     private var pendingGalleryRefresh = false
     private var query = ""
+    private var searchRefresh: DispatchWorkItem?
     private var changingPassword = false
     private var selectedSetting: IndexPath?
     init(storage: SecureStorage) { self.storage = storage; if #available(iOS 13, *) { super.init(style: .insetGrouped) } else { super.init(style: .grouped) } }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func viewDidLoad() {
         super.viewDidLoad(); title = Strings.settings
+        navigationItem.largeTitleDisplayMode = .never
         navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .close, target: self, action: #selector(done))
         tableView.rowHeight = UITableView.automaticDimension; tableView.estimatedRowHeight = 56
         let search = UISearchController(searchResultsController: nil)
         search.searchResultsUpdater = self
+        search.delegate = self
         search.obscuresBackgroundDuringPresentation = false
         search.searchBar.placeholder = Strings.text("搜索设置", "Search settings", "設定を検索", "搜尋設定")
         navigationItem.searchController = search
@@ -51,9 +54,21 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         }
     }
     func updateSearchResults(for searchController: UISearchController) {
-        query = (searchController.searchBar.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        refreshSections()
-        tableView.reloadData()
+        searchRefresh?.cancel()
+        let next = (searchController.searchBar.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard next != query else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.query != next else { return }
+            self.query = next
+            let previous = self.sections
+            self.refreshSections()
+            if previous != self.sections { UIView.performWithoutAnimation { self.tableView.reloadData() } }
+        }
+        searchRefresh = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.10, execute: work)
+    }
+    func willPresentSearchController(_ searchController: UISearchController) {
+        if tableView.isDecelerating { tableView.setContentOffset(tableView.contentOffset, animated: false) }
     }
     private func refreshTitles() {
         titles = [Strings.text("外观", "Appearance", "外観", "外觀"), Strings.text("主页", "Gallery", "ギャラリー", "主頁"),
