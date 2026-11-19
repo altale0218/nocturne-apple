@@ -723,7 +723,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         guard let overlay = sidebar193, overlay.isUserInteractionEnabled else { return }
         overlay.isUserInteractionEnabled = false
         let scrim = drawerDismissControl
-        UIView.animate(withDuration: sidebarDuration193, delay: 0, options: [.curveEaseIn, .beginFromCurrentState]) {
+        UIView.animate(withDuration: sidebarDuration193, delay: 0, usingSpringWithDamping: 0.88, initialSpringVelocity: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
             self.foreground.transform = .identity
             scrim?.alpha = 0
         } completion: { [weak self] _ in
@@ -1032,7 +1032,7 @@ final class GalleryPageSlide: NSObject, UIViewControllerTransitioningDelegate, U
         let entering: Bool
         init(entering: Bool) { self.entering = entering }
         func transitionDuration(using context: UIViewControllerContextTransitioning?) -> TimeInterval {
-            UIAccessibility.isReduceMotionEnabled && context?.isInteractive != true ? 0 : 0.33
+            UIAccessibility.isReduceMotionEnabled && context?.isInteractive != true ? 0 : 0.26
         }
         func animateTransition(using context: UIViewControllerContextTransitioning) {
             let key: UITransitionContextViewKey = entering ? .to : .from
@@ -1047,7 +1047,7 @@ final class GalleryPageSlide: NSObject, UIViewControllerTransitioningDelegate, U
             let outside = resting.offsetBy(dx: width, dy: 0)
             if entering { moving.frame = outside }
             UIView.animate(withDuration: transitionDuration(using: context), delay: 0,
-                           options: context.isInteractive ? .curveLinear : .curveEaseOut) {
+                           options: context.isInteractive ? .curveLinear : .curveEaseInOut) {
                 moving.frame = self.entering ? resting : outside
             } completion: { _ in
                 let cancelled = context.transitionWasCancelled

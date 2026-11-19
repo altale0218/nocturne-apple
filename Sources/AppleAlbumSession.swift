@@ -34,6 +34,20 @@ private struct AppleAlbumSession {
         let id: String
         let pin: String
         var peer: StoredPeer?
+        var peers: [StoredPeer]?
+
+        var trustedPeers: [StoredPeer] {
+            var values = peers ?? []
+            if let peer = peer, peer.trusted, !values.contains(where: { $0.id == peer.id }) {
+                values.append(peer)
+            }
+            return values.filter { $0.trusted }
+        }
+
+        mutating func remember(_ value: StoredPeer) {
+            peers = trustedPeers.filter { $0.id != value.id } + [value]
+            peer = value
+        }
     }
     struct StoredPeer: Codable {
         let id: String
@@ -304,6 +318,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
     private var pairingOptions: UIView?
     private var syncOptions: UIView?
     private var verifiedAddress: String?
+    private var verifiedPeerID: String?
     private var pairingStep: String?
     private var canReceiveOrdinaryLibrary = false
     private var enteredWrongCode = false
@@ -378,7 +393,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         let networkHint = Self.label("在 Android 打开「同步设备」。如果热点上没有自动发现，请手动填写 Android 页面显示的局域网 IP。", style: .footnote)
         networkHint.textColor = .secondaryLabel
         let devices = Self.card("附近设备", fields: [searchDevices, discoveryStatus, nearbyDevices, address, networkHint, help])
-        let pairingCard = Self.card("新设备配对", fields: [Self.label("在 Android 打开「同步设备」，并核对 Android 上显示的六位码。", style: .footnote), pairing])
+        let pairingCard = Self.card("手动配对", fields: [Self.label("在 Android 打开「同步设备」，并核对 Android 上显示的六位码。", style: .footnote), pairing])
         let connectionCard = Self.card("已配对设备", fields: [connectDevice])
         pairingOptions = pairingCard
         connectionOptions = connectionCard
@@ -704,13 +719,16 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         }
         for (label, ip) in nearbyAddresses.sorted(by: { $0.key < $1.key }) {
             let button = UIButton(type: .system)
-            button.configuration = Self.action(title: "\(label) · \(ip)", symbol: "iphone")
+            let isPairing = pages.selectedSegmentIndex == 1
+            button.configuration = Self.action(title: isPairing ? "配对" : "连接", symbol: isPairing ? "link" : "wifi")
+            button.accessibilityLabel = (isPairing ? "配对 " : "连接 ") + label
             button.addAction(UIAction { [weak self] _ in
                 guard let self = self, self.job == nil else { return }
                 self.address.text = ip
                 self.addressChanged()
+                if isPairing { self.pair() } else { self.verifyConnection() }
             }, for: .touchUpInside)
-            nearbyDevices.addArrangedSubview(button)
+            nearbyDevices.addArrangedSubview(Self.card(label, fields: [Self.label(ip, style: .footnote), button]))
         }
     }
 
@@ -754,11 +772,12 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
 
     @objc private func switchDevicePage() {
         let pairingPage = pages.selectedSegmentIndex == 1
-        let connected = verifiedAddress == enteredAddress
+        let connected = verifiedAddress != nil && verifiedAddress == enteredAddress
         pairingOptions?.isHidden = !pairingPage
         connectionOptions?.isHidden = pairingPage
         syncOptions?.isHidden = pairingPage || !connected
         start.isHidden = pairingPage || !connected || !canReceiveOrdinaryLibrary
+        refreshNearbyDevices()
     }
 
     @objc private func addressChanged() {
@@ -778,17 +797,19 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         task {
             let session = AppleAlbumSession(storage: self.storage, lease: try self.storage.resourceLease193())
             var settings = try session.settings()
-            guard let stored = settings.peer, stored.trusted else { throw AppleSyncTransport.Failure.authentication }
-            self.status.text = "正在连接 \(stored.name)…"
+            self.status.text = "正在核对 Android 身份…"
             let remote = try await AppleSyncTransport.probe(address: ip)
+            guard let stored = settings.trustedPeers.first(where: { $0.id == remote.id }) else {
+                throw AppleSyncTransport.Failure.rejected("pair-required")
+            }
             guard remote.pin == stored.pin else { throw AppleSyncTransport.Failure.changedPeer }
-            guard remote.id == stored.id else { throw AppleSyncTransport.Failure.changedPeer }
             let peer = try stored.connect(address: ip)
             try await AppleAlbumSession.verify(peer: peer, local: session.local(settings),
                                                confirmedScope: remote.supportsAlbumConnection)
             try Task.checkCancellation()
-            settings.peer = AppleAlbumSession.StoredPeer(peer, trusted: true)
+            settings.remember(AppleAlbumSession.StoredPeer(peer, trusted: true))
             try session.save(settings)
+            self.verifiedPeerID = remote.id
             self.verifiedAddress = ip
             self.canReceiveOrdinaryLibrary = remote.supportsOrdinaryLibrary
             self.status.text = remote.supportsOrdinaryLibrary
@@ -817,8 +838,10 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
             let peer = try await AppleSyncTransport.pair(address: ip, remote: remote, local: local, confirm: { name, code in
                 await self.enterCode(name: name, expected: code)
             }, store: { peer, trusted in
-                settings.peer = AppleAlbumSession.StoredPeer(peer, trusted: trusted)
-                try session.save(settings)
+                if trusted {
+                    settings.remember(AppleAlbumSession.StoredPeer(peer, trusted: true))
+                    try session.save(settings)
+                }
             })
             self.verifiedAddress = nil
             self.pages.selectedSegmentIndex = 0
@@ -873,7 +896,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         task(keepsScreenAwake: true) {
             let session = AppleAlbumSession(storage: self.storage, lease: try self.storage.resourceLease193())
             let settings = try session.settings()
-            guard let paired = settings.peer, paired.trusted else { throw AppleSyncTransport.Failure.authentication }
+            guard let paired = settings.trustedPeers.first(where: { $0.id == self.verifiedPeerID }) else { throw AppleSyncTransport.Failure.authentication }
             let peer = try paired.connect(address: ip)
             let authorization = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
             guard authorization == .authorized else {
@@ -981,6 +1004,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         case AppleSyncTransport.Failure.rejected("pair-declined"): status.text = "Android 未确认此次配对。"
         case AppleSyncTransport.Failure.rejected("pair-timeout"): status.text = "Android 等待配对响应超时。"
         case AppleSyncTransport.Failure.rejected("pair-failed"): status.text = "Android 已收到请求，但无法完成配对。"
+        case AppleSyncTransport.Failure.rejected("pair-required"): status.text = "这台设备尚未配对。请在「配对设备」中点这台设备的卡片。"
         case AppleSyncTransport.Failure.rejected("not-android"): status.text = "此地址回应的不是 Android 设备。请检查设备列表或 Android 上显示的地址。"
         case AppleSyncTransport.Failure.rejected("android-all-version"): status.text = "当前 Android 版本不支持发送全部图库。请先更新 Android。"
         case AppleSyncTransport.Failure.rejected("album-version"): status.text = "已找到 Android，但该版本不支持跨平台相册同步。请先升级 Android 客户端。"

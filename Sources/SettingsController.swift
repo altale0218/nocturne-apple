@@ -13,7 +13,7 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func viewDidLoad() {
         super.viewDidLoad(); title = Strings.settings
-        navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .done, target: self, action: #selector(done))
+        navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .close, target: self, action: #selector(done))
         tableView.rowHeight = UITableView.automaticDimension; tableView.estimatedRowHeight = 56
         let search = UISearchController(searchResultsController: nil)
         search.searchResultsUpdater = self
@@ -33,6 +33,7 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
                     ["filmstrip", "swipeDismiss", "blur", "viewerAll", "date", "fine"],
                     ["videoDoubleTap", "viewerMuted", "hold", "openMark"],
                     ["preview"], ["mode", "boundary", "privacy"], ["release"]]
+        if #available(iOS 15, *) { sections[6].append("crashReport") }
         if p.squareTiles { sections[1].insert("squareCorners", at: 2) }
         if storage.envelope.privateMode { sections[5].insert(contentsOf: ["password", "biometric"], at: 1) }
         if p.previewVideos { sections[4].append("limit"); sections[4].append("markLoop"); if p.markerPreview122 == true { sections[4].append("markWindow") } }
@@ -63,6 +64,7 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { sections[section].count }
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? { sections[section].isEmpty ? nil : titles[section] }
     private func label(_ id: String) -> String {
+        if id == "crashReport" { return "上传崩溃报告" }
         switch id {
         case "filmstrip": return Strings.text("显示底部预览条", "Show the filmstrip", "プレビュー列を表示", "顯示底部預覽條")
         case "swipeDismiss": return Strings.text("下滑退出查看器", "Swipe down to close viewer", "下にスワイプして閉じる", "下滑退出檢視器")
@@ -196,6 +198,7 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         case "blur": number(id, current: storage.state.settings.blurRadius, range: 0...48) { $0.settings.blurRadius = $1 }
         case "mode": changeMode()
         case "boundary": message(label(id), Strings.text("缓存始终经过认证加密。Private 增加每次开启的密码验证，影响解锁耗时；不会逐帧验证密码或降低原片分辨率。系统相册中的原片仍由系统管理，不会因为开启 Private 自动隐藏或加密复制。本工程未经过安全审计。", "Caches always use authenticated encryption. Private adds startup password verification, affecting unlock time, not per-frame playback or original resolution. Originals in Photos remain managed by the system and are not hidden or copied by enabling Private. This engineering preview has not had a security audit.", "キャッシュは常に認証付き暗号化。Private は起動時のパスワード検証を追加し、解除時間に影響します。フレーム処理や元画像の解像度は変えません。システム写真の元ファイルは自動的に非表示や複製になりません。セキュリティ監査は未実施です。", "快取始終使用驗證加密。Private 增加啟動密碼驗證，影響解鎖時間，不影響逐幀播放與原片解析度。系統相簿原片不會自動隱藏或加密複製。本工程未經安全審計。"))
+        case "crashReport": if #available(iOS 15, *) { CrashReports209.shared.present(from: self) }
         case "release": message(label(id), Release.notes)
         default: break
         }
