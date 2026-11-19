@@ -204,10 +204,10 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         }
     }
     private func choices(_ id: String, names: [String], values: [String], apply: @escaping (inout LibraryState, String) -> Void) {
-        let alert = UIAlertController(title: label(id), message: nil, preferredStyle: .actionSheet)
-        for (n, name) in names.enumerated() {
+        let alert = UIAlertController(title: label(id), message: nil, preferredStyle: .alert)
+        for (name, value) in zip(names, values) {
             alert.addAction(UIAlertAction(title: name, style: .default) { _ in
-                self.storage.update { apply(&$0, values[n]) }
+                self.storage.update { apply(&$0, value) }
                 try? self.storage.save()
                 self.title = Strings.settings
                 self.applyAppearance()

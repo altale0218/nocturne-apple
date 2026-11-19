@@ -115,7 +115,7 @@ enum AppleSyncTransport {
         case Failure.closed, Failure.timeout: return true
         case let NWError.posix(code):
             return [.ECONNABORTED, .ECONNRESET, .ECONNREFUSED, .ENOTCONN,
-                    .EHOSTUNREACH, .ENETDOWN, .ENETUNREACH, .ETIMEDOUT].contains(code)
+                    .EHOSTUNREACH, .ENETDOWN, .ENETUNREACH, .EPIPE, .ETIMEDOUT].contains(code)
         default: return false
         }
     }
@@ -465,11 +465,16 @@ enum AppleSyncTransport {
         func send(_ data: Data, cancelledTaskClosesSocket: Bool = true) async throws {
             let transmit = {
                 try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                    let deadline = DispatchWorkItem { self.connection.cancel() }
+                    var timedOut = false
+                    let deadline = DispatchWorkItem {
+                        timedOut = true
+                        self.connection.cancel()
+                    }
                     self.queue.asyncAfter(deadline: .now() + .seconds(30), execute: deadline)
                     self.connection.send(content: data, completion: .contentProcessed { error in
                         deadline.cancel()
-                        if let error = error { continuation.resume(throwing: error) }
+                        if timedOut { continuation.resume(throwing: Failure.timeout) }
+                        else if let error = error { continuation.resume(throwing: error) }
                         else { continuation.resume() }
                     })
                 }
@@ -489,11 +494,16 @@ enum AppleSyncTransport {
             return try await withTaskCancellationHandler(operation: {
                 try Task.checkCancellation()
                 return try await withCheckedThrowingContinuation { continuation in
-                    let deadline = DispatchWorkItem { self.connection.cancel() }
+                    var timedOut = false
+                    let deadline = DispatchWorkItem {
+                        timedOut = true
+                        self.connection.cancel()
+                    }
                     queue.asyncAfter(deadline: .now() + .seconds(timeout), execute: deadline)
                     connection.receive(minimumIncompleteLength: count, maximumLength: count) { data, _, _, error in
                         deadline.cancel()
-                        if let error = error { continuation.resume(throwing: error) }
+                        if timedOut { continuation.resume(throwing: Failure.timeout) }
+                        else if let error = error { continuation.resume(throwing: error) }
                         else if let data = data, data.count == count { continuation.resume(returning: data) }
                         else { continuation.resume(throwing: Failure.closed) }
                     }

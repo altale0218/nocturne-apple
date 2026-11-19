@@ -17,6 +17,8 @@ final class NocturneTests: XCTestCase {
         XCTAssertTrue(AppleSyncTransport.retryableConnectionLoss(AppleSyncTransport.Failure.timeout))
         XCTAssertTrue(AppleSyncTransport.retryableConnectionLoss(NWError.posix(.ECONNREFUSED)))
         XCTAssertTrue(AppleSyncTransport.retryableConnectionLoss(NWError.posix(.EHOSTUNREACH)))
+        XCTAssertTrue(AppleSyncTransport.retryableConnectionLoss(NWError.posix(.EPIPE)))
+        XCTAssertFalse(AppleSyncTransport.retryableConnectionLoss(NWError.posix(.ECANCELED)))
         XCTAssertFalse(AppleSyncTransport.retryableConnectionLoss(AppleSyncTransport.Failure.authentication))
         XCTAssertFalse(AppleSyncTransport.retryableConnectionLoss(AppleSyncTransport.Failure.certificate))
         XCTAssertFalse(AppleSyncTransport.retryableConnectionLoss(AppleSyncTransport.Failure.rejected("consent173")))

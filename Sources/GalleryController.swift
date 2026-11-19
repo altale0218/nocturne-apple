@@ -21,6 +21,8 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
     private var closingDrawerInteractively = false
     private var sidebarRows193: [(String, String, () -> Void)] = []
     private var pinchPreset193 = 1
+    private var pinchFinishedAt: TimeInterval = 0
+    private var gridPinch: UIPinchGestureRecognizer?
     private var pinchAnchor193: IndexPath?
     private var pinchOffset193: CGFloat = 0
     private var selecting193 = false, deleting193 = false
@@ -50,7 +52,9 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         collection = UICollectionView(frame: .zero, collectionViewLayout: layout)
         collection.backgroundColor = .clear; collection.alwaysBounceVertical = true
         collection.contentInsetAdjustmentBehavior = .never; collection.showsHorizontalScrollIndicator = false
-        collection.addGestureRecognizer(UIPinchGestureRecognizer(target: self, action: #selector(resizeGrid193(_:))))
+        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(resizeGrid193(_:)))
+        gridPinch = pinch
+        collection.addGestureRecognizer(pinch)
         let edge = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(revealSidebar193(_:)))
         edge.edges = .left
         view.addGestureRecognizer(edge)
@@ -60,7 +64,9 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         swipe.delegate = self
         collection.addGestureRecognizer(swipe)
         swipe.require(toFail: edge)
-        collection.addGestureRecognizer(UILongPressGestureRecognizer(target: self, action: #selector(reorder(_:))))
+        let reorder = UILongPressGestureRecognizer(target: self, action: #selector(reorder(_:)))
+        reorder.delegate = self
+        collection.addGestureRecognizer(reorder)
         collection.dataSource = self; collection.delegate = self; collection.prefetchDataSource = self; collection.allowsMultipleSelection = true
         collection.register(MediaCell.self, forCellWithReuseIdentifier: MediaCell.reuse)
         collection.register(CaptureDayHeader199.self, forSupplementaryViewOfKind: GalleryLayout.dayHeader, withReuseIdentifier: GalleryLayout.dayHeader)
@@ -106,6 +112,9 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         gestureRecognizer is UIPanGestureRecognizer && otherGestureRecognizer === collection.panGestureRecognizer
     }
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if gestureRecognizer is UILongPressGestureRecognizer {
+            return filter == "star" && !selecting193 && layout.mode == .tiles && !pinchInProgress
+        }
         guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return true }
         let velocity = pan.velocity(in: view)
         return !selecting193 && abs(velocity.x) > abs(velocity.y) && (sidebar193 == nil ? velocity.x > 0 : velocity.x < 0)
@@ -207,7 +216,10 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         return cell
     }
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
-        guard !deleting193, shown.indices.contains(indexPath.item) else { return }
+        guard !pinchInProgress, !deleting193, shown.indices.contains(indexPath.item) else {
+            collectionView.deselectItem(at: indexPath, animated: false)
+            return
+        }
         let asset = shown[indexPath.item]
         if selecting193 { selected193.insert(asset.localIdentifier); (collectionView.cellForItem(at: indexPath) as? MediaCell)?.selection193(active: true, selected: true); selectionHeader193(); return }
         collectionView.deselectItem(at: indexPath, animated: false)
@@ -441,7 +453,15 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         }
         alert.addAction(UIAlertAction(title: Strings.cancel, style: .cancel)); anchor(alert); present(alert, animated: true)
     }
+    private var pinchInProgress: Bool {
+        gridPinch?.state == .began || gridPinch?.state == .changed ||
+            ProcessInfo.processInfo.systemUptime - pinchFinishedAt < 0.22
+    }
+
     @objc private func resizeGrid193(_ gesture: UIPinchGestureRecognizer) {
+        if gesture.state == .ended || gesture.state == .cancelled {
+            pinchFinishedAt = ProcessInfo.processInfo.systemUptime
+        }
         guard !selecting193, sidebar193 == nil else { return }
         if gesture.state == .began {
             pinchPreset193 = GalleryRules122.gallerySizes.firstIndex(of: layout.sizePreset) ?? 3
@@ -817,7 +837,24 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
     @available(iOS 13, *)
     func collectionView(_ collectionView: UICollectionView, shouldBeginMultipleSelectionInteractionAt indexPath: IndexPath) -> Bool { false }
     @available(iOS 13, *)
-    func collectionView(_ collectionView: UICollectionView, didBeginMultipleSelectionInteractionAt indexPath: IndexPath) { beginSelection193() }
+    func collectionView(_ collectionView: UICollectionView, contextMenuConfigurationForItemsAt indexPaths: [IndexPath],
+                        point: CGPoint) -> UIContextMenuConfiguration? {
+        guard !pinchInProgress, !selecting193, !deleting193, sidebar193 == nil,
+              !(filter == "star" && layout.mode == .tiles), indexPaths.count == 1,
+              let indexPath = indexPaths.first, shown.indices.contains(indexPath.item) else { return nil }
+        let assetID = shown[indexPath.item].localIdentifier
+        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+            let select = UIAction(title: "多选", image: UIImage(systemName: "checkmark.circle")) { [weak self] _ in
+                guard let self, !self.pinchInProgress, !self.deleting193,
+                      let index = self.shown.firstIndex(where: { $0.localIdentifier == assetID }) else { return }
+                self.beginSelection193()
+                let path = IndexPath(item: index, section: 0)
+                self.collection.selectItem(at: path, animated: false, scrollPosition: [])
+                self.collectionView(self.collection, didSelectItemAt: path)
+            }
+            return UIMenu(children: [select])
+        }
+    }
     private func selectionMenu193() {
         guard !selected193.isEmpty, !deleting193 else { return }
         let alert = UIAlertController(title: "已选 \(selected193.count) 项", message: nil, preferredStyle: .actionSheet)
@@ -981,8 +1018,8 @@ final class GalleryPageSlide: NSObject, UIViewControllerTransitioningDelegate, U
     func installEdge(on page: UIViewController, canReturn: @escaping () -> Bool) {
         self.page = page
         self.canReturn = canReturn
-        let edge = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(returnFromEdge(_:)))
-        edge.edges = .left
+        let edge = UIPanGestureRecognizer(target: self, action: #selector(returnFromEdge(_:)))
+        edge.maximumNumberOfTouches = 1
         edge.delegate = self
         page.view.addGestureRecognizer(edge)
     }
@@ -990,10 +1027,22 @@ final class GalleryPageSlide: NSObject, UIViewControllerTransitioningDelegate, U
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard let page = page, page.presentedViewController == nil, canReturn?() == true else { return false }
         if #available(iOS 13, *), page.isModalInPresentation { return false }
-        return driver == nil && !page.isBeingPresented && !page.isBeingDismissed
+        guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
+        let translation = pan.translation(in: page.view)
+        let origin = pan.location(in: page.view).x - translation.x
+        let velocity = pan.velocity(in: page.view)
+        return origin <= 34 && velocity.x > abs(velocity.y) &&
+            driver == nil && !page.isBeingPresented && !page.isBeingDismissed
     }
 
-    @objc private func returnFromEdge(_ gesture: UIScreenEdgePanGestureRecognizer) {
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard let scroll = otherGestureRecognizer.view as? UIScrollView else { return false }
+        return otherGestureRecognizer === scroll.panGestureRecognizer &&
+            scroll.contentSize.width <= scroll.bounds.width + 1
+    }
+
+    @objc private func returnFromEdge(_ gesture: UIPanGestureRecognizer) {
         guard let page = page else { return }
         let width = max(1, page.view.bounds.width)
         let offset = gesture.translation(in: page.view.superview).x
@@ -1046,14 +1095,27 @@ final class GalleryPageSlide: NSObject, UIViewControllerTransitioningDelegate, U
             let resting = moving.frame
             let outside = resting.offsetBy(dx: width, dy: 0)
             if entering { moving.frame = outside }
-            UIView.animate(withDuration: transitionDuration(using: context), delay: 0,
-                           options: context.isInteractive ? .curveLinear : .curveEaseInOut) {
-                moving.frame = self.entering ? resting : outside
-            } completion: { _ in
+            let duration = transitionDuration(using: context)
+            let animations = { moving.frame = self.entering ? resting : outside }
+            let completion = {
                 let cancelled = context.transitionWasCancelled
                 if (!self.entering && !cancelled) || (self.entering && cancelled) { moving.removeFromSuperview() }
                 moving.frame = resting
                 context.completeTransition(!cancelled)
+            }
+            if context.isInteractive {
+                UIView.animate(withDuration: duration, delay: 0, options: .curveLinear,
+                               animations: animations, completion: { _ in completion() })
+            } else if duration == 0 {
+                animations()
+                completion()
+            } else {
+                let curve = UICubicTimingParameters(controlPoint1: CGPoint(x: 0.23, y: 0.80),
+                                                    controlPoint2: CGPoint(x: 0.26, y: 1.0))
+                let animator = UIViewPropertyAnimator(duration: duration, timingParameters: curve)
+                animator.addAnimations(animations)
+                animator.addCompletion { _ in completion() }
+                animator.startAnimation()
             }
         }
     }
