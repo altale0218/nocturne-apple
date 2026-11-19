@@ -209,14 +209,17 @@ private struct AppleAlbumSession {
 
     private static func previewReport(_ outgoing: MobileAlbumTransfer.PreviewTotals, _ incoming: MobileAlbumTransfer.PreviewTotals,
                                       _ upload: Int64, _ download: Int64) -> String {
+        func duration(_ seconds: Int64) -> String {
+            seconds < 60 ? "\(seconds) 秒" : "约 \((seconds + 59) / 60) 分钟"
+        }
         func row(_ label: String, _ totals: MobileAlbumTransfer.PreviewTotals, _ rate: Int64) -> String {
             let size = ByteCountFormatter.string(fromByteCount: totals.bytes, countStyle: .file)
-            let seconds = (totals.bytes + rate - 1) / rate
-            let time = seconds < 60 ? "\(seconds) 秒" : "约 \((seconds + 59) / 60) 分钟"
+            let time = duration((totals.bytes + rate - 1) / rate)
             return "【\(label)】待传 \(totals.pending) 项 · \(size) · \(time)\n完全重复 \(totals.duplicates) 项，待核实 \(totals.deferred) 项"
         }
+        let total = (outgoing.bytes + upload - 1) / upload + (incoming.bytes + download - 1) / download
         return row("发送", outgoing, upload) + "\n\n" + row("接收", incoming, download)
-            + "\n\n预计时间由各方向的测试包测得，不包含 iCloud 下载或系统相册写入时间。"
+            + "\n\n预计传输共 \(duration(total))。按测试包测速，不含 iCloud 下载或系统相册写入。"
     }
 
     private final class TransferCatalog {
@@ -492,7 +495,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         discoveryStatus.numberOfLines = 0
         pages.selectedSegmentIndex = 0
         pages.addTarget(self, action: #selector(switchDevicePage), for: .valueChanged)
-        start.configuration = Self.action(title: "开始同步", symbol: "arrow.left.arrow.right", primary: true)
+        start.configuration = Self.action(title: "核对并预估", symbol: "arrow.left.arrow.right", primary: true)
         start.addTarget(self, action: #selector(run), for: .touchUpInside)
         for button in [pairing, connectDevice, start] {
             button.heightAnchor.constraint(greaterThanOrEqualToConstant: 46).isActive = true
@@ -985,7 +988,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         connectionOptions?.isHidden = true
         syncOptions?.isHidden = !hasSelection || (!connected && !canResume)
         start.isHidden = !hasSelection || (!connected && !canResume)
-        start.configuration?.title = canResume ? "继续同步" : "开始同步"
+        start.configuration?.title = canResume ? "重新核对" : "核对并预估"
         refreshNearbyDevices()
     }
 
@@ -1257,13 +1260,13 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
             status.text = "相册内容已变化。请重新核对后确认。"
         case let failure as AppleAlbumSession.TransferFailure:
             let retry = AppleAlbumSession.canReconnect(failure)
-            if retry { start.configuration?.title = "继续同步" }
+            if retry { start.configuration?.title = "重新核对" }
             status.text = "\(failure.stage)失败：\(failure.reason)。" +
                 (retry ? "网络恢复后可继续，已写入的原件会先核对。" : "请检查这一步后再试。")
         case let failure where AppleAlbumSession.canReconnect(failure) && resumeDeviceAddress == nil:
             status.text = "无法连接 Android。请确认两台设备在同一局域网、iOS 已允许本地网络，并在 Android 打开「同步设备」。"
         case let failure where AppleAlbumSession.canReconnect(failure):
-            start.configuration?.title = "继续同步"
+            start.configuration?.title = "重新核对"
             status.text = "连接中断。重新连接同一局域网后，可继续核对并传输剩余原片。"
         case AppleSyncTransport.Failure.rejected("busy"): status.text = "Android 正在处理其他同步，请稍后重试。"
         case AppleSyncTransport.Failure.rejected("mode173"), AppleSyncTransport.Failure.rejected("consent173"):
