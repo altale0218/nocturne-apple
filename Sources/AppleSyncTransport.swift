@@ -12,6 +12,7 @@ enum AppleSyncTransport {
     enum Failure: Error {
         case address, certificate, timeout, malformed, declined, changedPeer, authentication, closed
         case rejected(String)
+        case identityMismatch(String)
     }
 
     struct Identity {
@@ -64,7 +65,7 @@ enum AppleSyncTransport {
     static func pair(address: String, remote: Identity, local: Identity,
                      confirm: (String, String) async -> Bool,
                      store: (Peer, Bool) throws -> Void) async throws -> Peer {
-        guard local.id != remote.id else { throw Failure.changedPeer }
+        guard local.id != remote.id else { throw Failure.identityMismatch("local-id") }
         let socket = try await connect(address: address, pin: remote.pin)
         defer { socket.cancel() }
         let nonce = try AuthenticatedCipher.random(32).base64EncodedString()
@@ -73,7 +74,7 @@ enum AppleSyncTransport {
         let challenge = try await socket.readControl("commit173")
         let actual = try identity(challenge)
         guard actual.id == remote.id, actual.pin == remote.pin, actual.pin == socket.serverPin,
-              let serverNonce = challenge["nonce"] as? String else { throw Failure.changedPeer }
+              let serverNonce = challenge["nonce"] as? String else { throw Failure.identityMismatch("challenge") }
         _ = try decode(serverNonce, count: 32)
         try await socket.writeControl(["op": "reveal173", "nonce": nonce])
         _ = try await socket.readControl("compare173")
@@ -82,7 +83,7 @@ enum AppleSyncTransport {
         try await socket.writeControl(["op": "confirm173", "proof": hash("confirm|" + transcript)])
         let paired = try await socket.readControl("paired173")
         guard paired["id"] as? String == remote.id, paired["pin"] as? String == remote.pin,
-              let encodedKey = paired["key"] as? String else { throw Failure.changedPeer }
+              let encodedKey = paired["key"] as? String else { throw Failure.identityMismatch("result") }
         let peer = Peer(identity: actual, key: try decode(encodedKey, count: 32), address: address)
         try store(peer, false)
         try await socket.writeControl(["op": "stored173", "proof": mac(peer.key, "stored|" + transcript).base64EncodedString()])
@@ -394,6 +395,10 @@ enum AppleSyncTransport {
             let certificate = PeerCertificate()
             tlsState = certificate
             let tls = NWProtocolTLS.Options()
+            // The verifier populates the fingerprint for this specific connection.
+            // A resumed handshake may omit the peer certificate and verification callback.
+            sec_protocol_options_set_tls_resumption_enabled(tls.securityProtocolOptions, false)
+            sec_protocol_options_set_tls_tickets_enabled(tls.securityProtocolOptions, false)
             sec_protocol_options_set_min_tls_protocol_version(tls.securityProtocolOptions, .TLSv12)
             sec_protocol_options_set_max_tls_protocol_version(tls.securityProtocolOptions, .TLSv12)
             sec_protocol_options_set_verify_block(tls.securityProtocolOptions, { metadata, suppliedTrust, complete in
@@ -436,7 +441,8 @@ enum AppleSyncTransport {
                             case .ready:
                                 deadline.cancel()
                                 self.connection.stateUpdateHandler = nil
-                                continuation.resume()
+                                if self.serverPin != nil { continuation.resume() }
+                                else { continuation.resume(throwing: Failure.certificate) }
                             case .failed(let error):
                                 deadline.cancel()
                                 self.connection.stateUpdateHandler = nil

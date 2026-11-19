@@ -988,10 +988,16 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
             verifiedAddress = nil
             switchDevicePage()
             status.text = "已找到设备，但无法验证其连接证书。请检查两端日期与时间是否自动同步，并确认 Android 使用最新版本。"
+        case AppleSyncTransport.Failure.identityMismatch("local-id"):
+            status.text = "本机与 Android 的设备标识冲突，配对已停止。"
+        case AppleSyncTransport.Failure.identityMismatch("challenge"):
+            status.text = "配对握手返回的身份与刚发现的 Android 不一致，或挑战数据不完整。"
+        case AppleSyncTransport.Failure.identityMismatch("result"):
+            status.text = "Android 返回的配对结果身份不匹配或缺少凭证。"
         case AppleSyncTransport.Failure.changedPeer:
             verifiedAddress = nil
             switchDevicePage()
-            status.text = "Android 身份验证未通过。请确认地址属于要连接的设备；若 Android 已更换安装或身份，请手动重新配对。"
+            status.text = "保存的 Android 证书指纹与当前设备不一致。确认是该设备后，从它的卡片重新配对。"
         case AppleSyncTransport.Failure.authentication:
             verifiedAddress = nil
             canReceiveOrdinaryLibrary = false
