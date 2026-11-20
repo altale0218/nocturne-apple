@@ -252,6 +252,7 @@ private struct AppleAlbumSession {
             request["op"] = "scope195"; request["platform"] = "ios"; request["operation"] = "album1"
             request["resourceReady1"] = true
             request["albumPreview1"] = true
+            request["albumIndexProgress1"] = true
             if let androidTarget = androidTarget { request["upload"] = androidTarget }
             if receiveAllAndroid { request["downloadScope"] = "allOrdinary199" }
             else if let androidSource = androidSource { request["download"] = androidSource }
@@ -275,7 +276,11 @@ private struct AppleAlbumSession {
                 throw AppleSyncTransport.Failure.rejected("album-preview-required")
             }
             try await channel.sendObject(1, Self.control("scope-commit195", context))
-            await channel.beginOrdinaryAlbumTransfer()
+            let indexProgress: ((String, Int, Int) -> Void)? = (ready["albumIndexProgress1"] as? Bool == true) ? { stage, done, total in
+                let action = stage == "hash" ? "Android 正在生成原件指纹" : "Android 正在回读本机候选原件"
+                progress(TransferStatus(message: "\(action) · 已查 \(done)/\(total) · 剩余 \(total - done)"))
+            } : nil
+            await channel.beginOrdinaryAlbumTransfer(indexProgress: indexProgress)
             if androidTarget != nil && catalog.source == nil {
                 stage = "读取及核对 iOS 原件"
                 let library = PhotoSyncLibrary(storage: storage)
@@ -308,6 +313,7 @@ private struct AppleAlbumSession {
                     progress(TransferStatus(message: "核对接收项目 · 已查 \(done) · 正在核对 \(active) · 待查 \(total - done - active)"))
                 }
             }
+            await channel.endAlbumIndexProgress()
             stage = "双向线路测速"
             progress(TransferStatus(message: "正在用测试包测量双向传输速度…"))
             let sample = 512 * 1024

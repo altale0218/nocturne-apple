@@ -36,8 +36,9 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
     private var wantedPreviewIDs = Set<String>()
     private var layerObservers: [String: NSKeyValueObservation] = [:]
     private var galleryVisible = false
-    private let scrollRail = UIView()
-    private let scrollThumb = UIView()
+    private let scrollRail = GalleryScrollRail()
+    private let scrollThumb = UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterial))
+    private let scrollGrip = UIImageView(image: UIImage(systemName: "chevron.up.chevron.down"))
     private let scrollDate = UILabel()
     private let scrollDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -81,10 +82,16 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         collection.register(MediaCell.self, forCellWithReuseIdentifier: MediaCell.reuse)
         collection.register(CaptureDayHeader199.self, forSupplementaryViewOfKind: GalleryLayout.dayHeader, withReuseIdentifier: GalleryLayout.dayHeader)
         foreground.addSubview(collection)
-        scrollThumb.layer.cornerRadius = 2
-        scrollThumb.backgroundColor = .secondaryLabel
+        scrollThumb.layer.cornerRadius = 14
+        scrollThumb.clipsToBounds = true
+        scrollThumb.layer.borderWidth = 1 / UIScreen.main.scale
+        scrollThumb.layer.borderColor = UIColor.separator.cgColor
+        scrollGrip.tintColor = .label
+        scrollGrip.contentMode = .center
+        scrollThumb.contentView.addSubview(scrollGrip)
         scrollThumb.isUserInteractionEnabled = false
         scrollRail.addSubview(scrollThumb)
+        scrollRail.handle = scrollThumb
         let scrub = UIPanGestureRecognizer(target: self, action: #selector(scrubGallery193(_:)))
         scrub.maximumNumberOfTouches = 1
         scrollRail.addGestureRecognizer(scrub)
@@ -133,7 +140,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         else if previousTop != collection.contentInset.top { collection.contentOffset.y += previousTop - collection.contentInset.top }
         placedInsets193 = true
         let railTop = toolbarGlass193.frame.maxY + 12
-        scrollRail.frame = CGRect(x: view.bounds.width - safe.right - 18, y: railTop, width: 18,
+        scrollRail.frame = CGRect(x: view.bounds.width - safe.right - 34, y: railTop, width: 34,
                                   height: max(0, view.bounds.height - safe.bottom - railTop - 12))
         updateScrollRail193()
         panel.restore(in: foreground)
@@ -293,11 +300,12 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         let span = scrollSpan193, height = scrollRail.bounds.height
         scrollRail.isHidden = span <= 1 || height < 48
         guard !scrollRail.isHidden else { scrollDate.isHidden = true; return }
-        let thumbHeight = min(height, max(32, height * collection.bounds.height / (span + collection.bounds.height)))
+        let thumbHeight: CGFloat = min(height, 48)
         let top = collection.contentOffset.y + collection.contentInset.top
         let fraction = min(1, max(0, top / span))
         let y = fraction * (height - thumbHeight)
-        scrollThumb.frame = CGRect(x: 12, y: y, width: 4, height: thumbHeight)
+        scrollThumb.frame = CGRect(x: 3, y: y, width: 28, height: thumbHeight)
+        scrollGrip.frame = scrollThumb.bounds
         if !scrollDate.isHidden {
             let item = collection.indexPathsForVisibleItems
                 .filter { shown.indices.contains($0.item) }
@@ -1001,16 +1009,25 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
     }
     private func confirmDelete193(_ values: [MediaAsset193]) {
         guard !values.isEmpty, !deleting193 else { return }
+        if !storage.envelope.privateMode && values.allSatisfy({ $0.native != nil }) {
+            deleteProjects193(values)
+            return
+        }
         let nativeCount = values.filter { $0.native != nil }.count
         let alert = UIAlertController(title: "删除 \(values.count) 个项目？", message: nativeCount > 0 ? "系统图库项目还需通过苹果相册的删除确认。应用内加密副本仅删除应用保存的内容。" : "仅删除应用内加密副本，不删除系统相册或其他导入原件。", preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-        alert.addAction(UIAlertAction(title: "删除", style: .destructive) { _ in
-            self.deleting193 = true; self.selectionHeader193()
-            self.repository.deleteBatch193(values) { removed, error in
-                self.deleting193 = false; self.selected193.subtract(removed); self.reload()
-                if let error = error { self.selectionFailure193(error) }
-            }
+        alert.addAction(UIAlertAction(title: "删除", style: .destructive) { [weak self] _ in
+            self?.deleteProjects193(values)
         }); present(alert, animated: true)
+    }
+    private func deleteProjects193(_ values: [MediaAsset193]) {
+        guard !deleting193 else { return }
+        deleting193 = true; selectionHeader193()
+        repository.deleteBatch193(values) { [weak self] removed, error in
+            guard let self else { return }
+            self.deleting193 = false; self.selected193.subtract(removed); self.reload()
+            if let error { self.selectionFailure193(error) }
+        }
     }
     private func selectionFailure193(_ error: Error) {
         guard view.window != nil, storage.isUnlocked193 else { return }

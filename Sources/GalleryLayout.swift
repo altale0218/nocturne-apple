@@ -99,6 +99,14 @@ final class CaptureDayHeader199: UICollectionReusableView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
+final class GalleryScrollRail: UIView {
+    weak var handle: UIView?
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        guard super.point(inside: point, with: event), let handle else { return false }
+        return handle.frame.insetBy(dx: -4, dy: -8).contains(point)
+    }
+}
+
 final class MediaCell: UICollectionViewCell {
     static let reuse = "media"
     let image = UIImageView(), name = UILabel(), facts = UILabel(), videoIcon = UILabel()
@@ -116,7 +124,7 @@ final class MediaCell: UICollectionViewCell {
         videoLayer.videoGravity = .resizeAspect
         name.font = .systemFont(ofSize: 11, weight: .medium); name.lineBreakMode = .byTruncatingTail
         facts.font = .monospacedDigitSystemFont(ofSize: 10, weight: .medium); facts.textColor = .white
-        facts.textAlignment = .right; facts.backgroundColor = UIColor(white: 0, alpha: 0.28); facts.layer.cornerRadius = 7; facts.clipsToBounds = true
+        facts.textAlignment = .center; facts.adjustsFontSizeToFitWidth = true; facts.minimumScaleFactor = 0.67; facts.backgroundColor = UIColor(white: 0, alpha: 0.28); facts.layer.cornerRadius = 7; facts.clipsToBounds = true
         videoIcon.text = "▷"; videoIcon.font = .systemFont(ofSize: 16); videoIcon.textColor = .white
         videoIcon.backgroundColor = UIColor(white: 0, alpha: 0.25); videoIcon.layer.cornerRadius = 8; videoIcon.clipsToBounds = true; videoIcon.textAlignment = .center
         contentView.addSubview(name); contentView.addSubview(facts); contentView.addSubview(videoIcon)
@@ -137,7 +145,8 @@ final class MediaCell: UICollectionViewCell {
         image.frame = CGRect(x: 0, y: 0, width: bounds.width, height: max(1, bounds.height - footer))
         videoLayer.frame = image.frame
         name.frame = CGRect(x: 8, y: image.frame.maxY, width: max(1, bounds.width - 16), height: footer)
-        facts.sizeToFit(); facts.frame = CGRect(x: max(4, bounds.width - facts.bounds.width - 14), y: max(4, image.frame.maxY - 26), width: facts.bounds.width + 10, height: 20)
+        let badgeWidth = min(max(1, bounds.width - 8), max(22, facts.intrinsicContentSize.width + 12))
+        facts.frame = CGRect(x: max(4, bounds.width - badgeWidth - 4), y: max(1, image.frame.maxY - 24), width: badgeWidth, height: 20)
         videoIcon.frame = CGRect(x: 8, y: 8, width: 25, height: 25)
         selectionBadge193.frame = CGRect(x: max(4, bounds.width - 32), y: max(4, image.frame.maxY - 32), width: 24, height: 24)
         protectedBadge193.frame = CGRect(x: max(4, bounds.width - 24), y: 8, width: 16, height: 18)

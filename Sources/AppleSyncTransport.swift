@@ -285,7 +285,12 @@ enum AppleSyncTransport {
         private var sending = false, reading = false
         private var ordinaryAlbumTransfer = false
 
-        func beginOrdinaryAlbumTransfer() { ordinaryAlbumTransfer = true }
+        private var albumIndexProgress: ((String, Int, Int) -> Void)?
+        func beginOrdinaryAlbumTransfer(indexProgress: ((String, Int, Int) -> Void)? = nil) {
+            ordinaryAlbumTransfer = true
+            albumIndexProgress = indexProgress
+        }
+        func endAlbumIndexProgress() { albumIndexProgress = nil }
 
         init(socket: Connection, cipher: Cipher) { self.socket = socket; self.cipher = cipher }
 
@@ -327,10 +332,20 @@ enum AppleSyncTransport {
         }
 
         func receiveFrame() async throws -> (kind: UInt8, data: Data) {
-            for _ in 0..<(ordinaryAlbumTransfer ? 540 : 180) {
+            let deadline = ProcessInfo.processInfo.systemUptime + (ordinaryAlbumTransfer ? 2700 : 900)
+            while ProcessInfo.processInfo.systemUptime < deadline {
                 let result = try await receiveRaw()
                 if result.kind != 8 { return result }
                 if result.data == Data("waiting173".utf8) { continue }
+                if let report = albumIndexProgress, result.data.count < 80,
+                   let line = String(data: result.data, encoding: .utf8), line.hasPrefix("album-index1/") {
+                    let fields = line.split(separator: "/")
+                    guard fields.count == 4, ["hash", "compare"].contains(String(fields[1])),
+                          let done = Int(fields[2]), let total = Int(fields[3]),
+                          (0...100_000).contains(total), (0...total).contains(done) else { throw Failure.malformed }
+                    report(String(fields[1]), done, total)
+                    continue
+                }
                 if ordinaryAlbumTransfer, let code = String(data: result.data, encoding: .utf8),
                    ["album-error-space1", "album-error-storage1", "album-error-verify1", "album-error-access1", "album-error-plan1", "album-error-catalog1", "album-error-payload1", "album-error-publish1", "album-error-receipt1", "album-error-io1"].contains(code) {
                     throw Failure.receiver(code)

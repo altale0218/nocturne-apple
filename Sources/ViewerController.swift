@@ -42,6 +42,8 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
     private var paging = false
     private var pageAnimationEpoch = 0
     private var adjacentPreview: DispatchWorkItem?
+    private let pagePoster = UIImageView()
+    private var pagePosterIndex: Int?
     private var backdropWork: DispatchWorkItem?
     private weak var liveButton199: UIButton?
     private var liveAvailable199: Bool?
@@ -99,6 +101,10 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
             plain.cornerStyle = .capsule
             more.configuration = plain
         }
+        pagePoster.contentMode = .scaleAspectFit
+        pagePoster.isUserInteractionEnabled = false
+        pagePoster.isHidden = true
+        stage.addSubview(pagePoster)
         stage.addSubview(chrome)
         facts.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium); facts.textColor = UIColor(white: 1, alpha: 0.75); facts.textAlignment = .right
         controls.addSubview(facts)
@@ -229,7 +235,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
             }
         }
         adjacentPreview = preload
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.10, execute: preload)
+        DispatchQueue.main.async(execute: preload)
         if video {
             request = repository.video(asset) { [weak self] item in
                 guard let self = self, self.generation == token, let item = item else { return }
@@ -479,12 +485,23 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         alert.addAction(UIAlertAction(title: Strings.cancel, style: .cancel)); anchor(alert); present(alert, animated: true)
     }
     private func deleteOriginal() {
+        guard assets.indices.contains(selected) else { return }
+        if !storage.envelope.privateMode && assets[selected].native != nil { performOriginalDeletion(); return }
         let alert = UIAlertController(title: Strings.text("删除原片？", "Delete original?", "元ファイルを削除しますか？", "刪除原片？"), message: Strings.text("系统照片会再次确认。不会删除其他项目。", "Photos will ask for confirmation. Other items are retained.", "写真アプリが確認します。他の項目は保持されます。", "系統照片會再次確認。其他項目保留。"), preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: Strings.cancel, style: .cancel))
-        alert.addAction(UIAlertAction(title: Strings.text("删除", "Delete", "削除", "刪除"), style: .destructive) { [weak self] _ in guard let self = self else { return }; self.generation += 1; self.stopPlayer(); self.repository.manager.cancelImageRequest(self.request); self.repository.delete(self.assets[self.selected]) { success, _ in if success {
-                    self.assets.remove(at: self.selected)
-                    if self.assets.isEmpty { self.close() } else { self.show(min(self.selected, self.assets.count - 1)) }
-                } else { self.show(self.selected, count: false) } } }); present(alert, animated: true)
+        alert.addAction(UIAlertAction(title: Strings.text("删除", "Delete", "削除", "刪除"), style: .destructive) { [weak self] _ in self?.performOriginalDeletion() }); present(alert, animated: true)
+    }
+    private func performOriginalDeletion() {
+        let asset = assets[selected]
+        generation += 1; stopPlayer(); repository.manager.cancelImageRequest(request)
+        repository.delete(asset) { [weak self] success, _ in
+            guard let self, !self.closing199 else { return }
+            if success, let index = self.assets.firstIndex(where: { $0.localIdentifier == asset.localIdentifier }) {
+                self.assets.remove(at: index)
+            }
+            if self.assets.isEmpty { self.close() }
+            else { self.show(min(self.selected, self.assets.count - 1), count: false) }
+        }
     }
     private func anchor(_ alert: UIAlertController) { alert.popoverPresentationController?.sourceView = actions; alert.popoverPresentationController?.sourceRect = actions.bounds }
     @objc private func toggleControls() {
@@ -523,6 +540,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         let dx = gesture.translation(in: zoom).x, width = max(1, zoom.bounds.width)
         if gesture.state == .began {
             pageAnimationEpoch += 1
+            pagePosterIndex = nil; pagePoster.isHidden = true; pagePoster.image = nil
             media.layer.removeAllAnimations()
             media.transform = .identity
             paging = true; fade?.cancel()
@@ -542,23 +560,42 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
             }
             return
         }
-        if gesture.state == .changed { media.transform = CGAffineTransform(translationX: dx * ((selected == 0 && dx > 0) || (selected == assets.count - 1 && dx < 0) ? 0.25 : 1), y: 0) }
+        if gesture.state == .changed {
+            let destination = selected + (dx < 0 ? 1 : -1)
+            let valid = assets.indices.contains(destination)
+            media.transform = CGAffineTransform(translationX: dx * (valid ? 1 : 0.25), y: 0)
+            guard valid else { pagePosterIndex = nil; pagePoster.isHidden = true; return }
+            if pagePosterIndex != destination {
+                pagePosterIndex = destination
+                let asset = assets[destination]
+                pagePoster.image = (strip.cellForItem(at: IndexPath(item: destination, section: 0)) as? MediaCell)?.image.image
+                repository.thumbnail(asset, pixels: 480) { [weak self] photo in
+                    guard let self, self.pagePosterIndex == destination, self.paging, let photo else { return }
+                    self.pagePoster.image = photo
+                }
+            }
+            pagePoster.frame = zoom.frame.offsetBy(dx: dx + (dx < 0 ? width : -width), dy: 0)
+            pagePoster.isHidden = false
+        }
         if gesture.state == .ended || gesture.state == .cancelled {
             let velocity = gesture.velocity(in: zoom).x
             let direction = abs(dx) >= 18 ? dx : velocity
             let destination = selected + (direction < 0 ? 1 : -1)
             let commit = gesture.state == .ended && assets.indices.contains(destination) && (abs(dx) > width * 0.17 || abs(velocity) > 570)
             let epoch = pageAnimationEpoch
-            if commit {
-                show(destination)
-                if !storage.state.settings.reducedMotion {
-                    media.transform = CGAffineTransform(translationX: direction < 0 ? width * 0.20 : -width * 0.20, y: 0)
-                }
-            }
+            let sign: CGFloat = direction < 0 ? -1 : 1
             UIView.animate(withDuration: storage.state.settings.reducedMotion ? 0 : 0.18, delay: 0, options: [.curveEaseOut, .beginFromCurrentState, .allowUserInteraction]) {
-                self.media.transform = .identity
+                self.media.transform = commit ? CGAffineTransform(translationX: sign * width, y: 0) : .identity
+                self.pagePoster.frame = self.zoom.frame.offsetBy(dx: commit ? 0 : -sign * width, dy: 0)
             } completion: { _ in
-                guard epoch == self.pageAnimationEpoch else { return }
+                guard epoch == self.pageAnimationEpoch, !self.closing199 else { return }
+                if commit {
+                    let poster = self.pagePosterIndex == destination ? self.pagePoster.image : nil
+                    if let poster { self.image.image = poster }
+                    self.show(destination, keepingPoster: poster != nil)
+                }
+                self.media.transform = .identity
+                self.pagePosterIndex = nil; self.pagePoster.isHidden = true; self.pagePoster.image = nil
                 self.paging = false
                 self.activate()
             }
@@ -747,6 +784,9 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         guard !assets.isEmpty, !closing199 else { return }
         let index = min(assets.count - 1, max(0, Int((strip.contentOffset.x / (stripItemWidth + stripSpacing)).rounded())))
         guard index != selected else { return }
+        stripCommit?.cancel()
+        repository.manager.cancelImageRequest(request)
+        backdropWork?.cancel()
         if !stripPreview {
             stripCommit?.cancel()
             stripPreview = true
@@ -758,6 +798,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         }
         let old = selected
         selected = index
+        fullReady193 = false
         generation += 1
         let token = generation, asset = assets[index]
         stripFeedback199.selectionChanged()
@@ -765,14 +806,46 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
             strip.cellForItem(at: IndexPath(item: item, section: 0))?.contentView.layer.borderWidth = border
         }
         if let cell = strip.cellForItem(at: IndexPath(item: index, section: 0)) as? MediaCell,
-           cell.represented == asset.localIdentifier, let poster = cell.image.image { image.image = poster }
-        else {
+           cell.represented == asset.localIdentifier, let poster = cell.image.image {
+            image.image = poster
+            refreshStripBackdrop(poster, generation: token)
+        } else {
+            image.image = nil
             repository.thumbnail(asset, pixels: 160) { [weak self] poster in
                 guard let self, self.generation == token, let poster else { return }
-                self.image.image = poster
+                if !self.fullReady193 { self.image.image = poster }
+                self.refreshStripBackdrop(poster, generation: token)
             }
         }
         updateLiveButton199(asset.mediaSubtypes.contains(.photoLive))
+        updateFacts()
+        if asset.mediaType == .image {
+            let sharpen = DispatchWorkItem { [weak self] in
+                guard let self, self.stripPreview, self.generation == token else { return }
+                let scale = self.view.window?.screen.scale ?? UIScreen.main.scale
+                let size = CGSize(width: max(600, self.stage.bounds.width * scale),
+                                  height: max(600, self.stage.bounds.height * scale))
+                self.request = self.repository.fullImage(asset, size: size) { [weak self] photo in
+                    guard let self, self.generation == token, let photo else { return }
+                    self.fullReady193 = true; self.image.image = photo
+                }
+            }
+            stripCommit = sharpen
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.095, execute: sharpen)
+        }
+    }
+    private func refreshStripBackdrop(_ poster: UIImage, generation token: Int) {
+        backdropWork?.cancel()
+        let radius = storage.state.settings.blurRadius
+        let work = DispatchWorkItem { [weak self] in
+            let blurred = PhotoBlur120.render(poster, radius: radius)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.stripPreview, self.generation == token else { return }
+                self.backdrop.image = blurred
+            }
+        }
+        backdropWork = work
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.038, execute: work)
     }
     private func updateLiveButton199(_ available: Bool) {
         guard let button = liveButton199, liveAvailable199 != available else { return }
