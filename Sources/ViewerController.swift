@@ -193,7 +193,8 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
     private func show(_ index: Int, count: Bool = true, centerStrip: Bool = true, posterOnly: Bool = false, keepingPoster: Bool = false) {
         guard !closing199, assets.indices.contains(index) else { return }
         if !posterOnly { stripCommit?.cancel(); stripPreview = false }
-        generation += 1; let token = generation; selected = index; fullReady193 = false
+        let reuseSharpImage = keepingPoster && index == selected && fullReady193 && assets[index].mediaType == .image
+        generation += 1; let token = generation; selected = index; fullReady193 = reuseSharpImage
         backdropWork?.cancel()
         adjacentPreview?.cancel()
         holding = false; holdLocked = false; speedHint.isHidden = true; rate = baseRate; media.transform = .identity
@@ -256,7 +257,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
                 } else { player.playImmediately(atRate: self.rate) }
                 self.initialPreviewReady = false; self.updateMark()
             }
-        } else {
+        } else if !reuseSharpImage {
             let scale = view.window?.screen.scale ?? UIScreen.main.scale
             request = repository.fullImage(asset, size: CGSize(width: max(600, stage.bounds.width * scale), height: max(600, stage.bounds.height * scale))) { [weak self] result in guard let self = self, self.generation == token else { return }; if let result = result { self.fullReady193 = true; UIView.transition(with: self.image, duration: self.storage.state.settings.reducedMotion ? 0 : 0.16, options: [.transitionCrossDissolve, .beginFromCurrentState, .allowUserInteraction]) { self.image.image = result } } }
         }
