@@ -111,6 +111,9 @@ private struct AppleAlbumSession {
         var inventory: Int64? = nil
         var itemProgress: Float? = nil
         var direction: Direction? = nil
+        var preparation: Int? = nil
+        var approvedSend: Int64? = nil
+        var approvedReceive: Int64? = nil
     }
 
     let storage: SecureStorage
@@ -278,25 +281,25 @@ private struct AppleAlbumSession {
             try await channel.sendObject(1, Self.control("scope-commit195", context))
             let indexProgress: ((String, Int, Int) -> Void)? = (ready["albumIndexProgress1"] as? Bool == true) ? { stage, done, total in
                 let action = stage == "hash" ? "Android 正在生成原件指纹" : "Android 正在回读本机候选原件"
-                progress(TransferStatus(message: "\(action) · 已查 \(done)/\(total) · 剩余 \(total - done)"))
+                progress(TransferStatus(message: "\(action) · 已查 \(done)/\(total) · 剩余 \(max(0, total - done))", itemProgress: Self.itemProgress(done, total), preparation: stage == "hash" ? 2 : 1))
             } : nil
             await channel.beginOrdinaryAlbumTransfer(indexProgress: indexProgress)
             if androidTarget != nil && catalog.source == nil {
                 stage = "读取及核对 iOS 原件"
                 let library = PhotoSyncLibrary(storage: storage)
                 let selected = try library.albumContents(album.identifier, lease: lease)
-                progress(TransferStatus(message: "正在检查 \(selected.visible.count) 项原始资源…"))
+                progress(TransferStatus(message: "正在检查 \(selected.visible.count) 项原始资源…", itemProgress: 0, preparation: 0))
                 catalog.source = try await MobileAlbumTransfer.withWaiting(channel) {
                     try await PhotoAlbumSource.prepare(storage: storage, selected: selected,
                         namespace: "android-peer/" + peer.identity.id, allowICloud: allowICloud, lease: lease) { done, total in
-                        progress(TransferStatus(message: "核验原片 \(done)/\(total)"))
+                        progress(TransferStatus(message: "核验原片 \(done)/\(total)", itemProgress: Self.itemProgress(done, total), preparation: 0))
                     }
                 }
             }
             if catalog.target == nil && (androidSource != nil || receiveAllAndroid) {
                 catalog.target = PhotoAlbumTarget(storage: storage, albumID: album.identifier, peer: peer.identity.id,
                     lease: lease, allowICloud: allowICloud, prepared: catalog.source) { done, total in
-                    progress(TransferStatus(message: "核对本机相册原件 \(done)/\(total)"))
+                    progress(TransferStatus(message: "核对本机相册原件 \(done)/\(total)", itemProgress: Self.itemProgress(done, total), preparation: 2))
                 }
             }
             stage = "双向核对重复原件"
@@ -304,18 +307,18 @@ private struct AppleAlbumSession {
             var outbound = MobileAlbumTransfer.PreviewTotals(), inbound = MobileAlbumTransfer.PreviewTotals()
             if let source = catalog.source {
                 outbound = try await MobileAlbumTransfer.previewSend(source, channel: channel) { done, active, total in
-                    progress(TransferStatus(message: "核对发送项目 · 已查 \(done) · 正在核对 \(active) · 待查 \(total - done - active)"))
+                    progress(TransferStatus(message: "核对发送项目 · 已查 \(done) · 正在核对 \(active) · 待查 \(max(0, total - done - active))", itemProgress: Self.itemProgress(done, total), preparation: 1))
                 }
                 source.rewindForReconnect()
             }
             if let target = catalog.target {
                 inbound = try await MobileAlbumTransfer.previewReceive(target, channel: channel) { done, active, total in
-                    progress(TransferStatus(message: "核对接收项目 · 已查 \(done) · 正在核对 \(active) · 待查 \(total - done - active)"))
+                    progress(TransferStatus(message: "核对接收项目 · 已查 \(done) · 正在核对 \(active) · 待查 \(max(0, total - done - active))", itemProgress: Self.itemProgress(done, total), preparation: 2))
                 }
             }
             await channel.endAlbumIndexProgress()
             stage = "双向线路测速"
-            progress(TransferStatus(message: "正在用测试包测量双向传输速度…"))
+            progress(TransferStatus(message: "正在用测试包测量双向传输速度…", preparation: 3))
             let sample = 512 * 1024
             let started = DispatchTime.now().uptimeNanoseconds
             try await channel.send(4, Data(repeating: 0, count: sample))
@@ -333,13 +336,14 @@ private struct AppleAlbumSession {
             stage = "等待双方确认同步报告"
             let report = Self.previewReport(outbound, inbound, outgoingRate, incomingRate)
             try await channel.sendObject(1, ["op": "album-preview-rate1", "rate": outgoingRate])
-            progress(TransferStatus(message: report))
+            progress(TransferStatus(message: report, preparation: 4))
             let approved = try await MobileAlbumTransfer.withWaiting(channel) { await approvePreview(report) }
             try Task.checkCancellation()
             try await channel.sendObject(1, ["op": "album-preview-confirm1", "approved": approved])
             let confirmation = try await channel.receiveObject(2)
             guard confirmation["op"] as? String == "album-preview-confirm1" else { throw MediaError193.malformed }
             guard approved, confirmation["approved"] as? Bool == true else { throw AppleSyncTransport.Failure.declined }
+            progress(TransferStatus(message: "双方已确认传输", approvedSend: outbound.bytes, approvedReceive: inbound.bytes))
             var details: [String] = []
             if let source = catalog.source {
                 stage = "发送：核对 Android 是否已有原件"
@@ -378,7 +382,10 @@ private struct AppleAlbumSession {
                 details.append("iOS 新增 \(target.imported) 项，复用 \(target.reused) 项，待处理 \(max(0, target.total - completed)) 项")
                 if target.undated > 0 { details.append("其中 \(target.undated) 项无可确认的拍摄时间，未写入系统相册") }
                 if target.metadataConflicts > 0 {
-                    details.append("其中 \(target.metadataConflicts) 项原件已存在，拍摄信息或收藏状态需核对，已保留现有项目。")
+                    details.append("其中 \(target.metadataConflicts) 项原件已存在，拍摄信息或收藏状态不同，已保留本机版本，无需重传。")
+                }
+                if !target.pendingIssues.isEmpty {
+                    details.append("待处理明细（最多 100 项）\n" + target.pendingIssues.values.sorted().joined(separator: "\n"))
                 }
                 if target.localUnverified > 0 {
                     details.append("本机相册有 \(target.localUnverified) 项原件暂时不可核验，请检查照片授权或 iCloud 下载状态。")
@@ -460,6 +467,13 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
     private let address = UITextField()
     private let status = UILabel()
     private let syncProgress = UIProgressView(progressViewStyle: .default)
+    private let outgoingProgress = UIProgressView(progressViewStyle: .default)
+    private let incomingProgress = UIProgressView(progressViewStyle: .default)
+    private let preparation = UILabel()
+    private var approvedSend: Int64 = 0
+    private var approvedReceive: Int64 = 0
+    private var sentBytes: Int64 = 0
+    private var receivedBytes: Int64 = 0
     private let statusCard = UIStackView()
     private let metricsStack = UIStackView()
     private let outgoingSummary = UILabel()
@@ -522,7 +536,19 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         let progressTitle = Self.label("同步状态", style: .headline)
         progressTitle.accessibilityTraits.insert(.header)
         configureMetrics()
-        Self.styleCard(statusCard, views: [progressTitle, status, syncProgress, metricsStack])
+        preparation.numberOfLines = 0
+        preparation.font = .preferredFont(forTextStyle: .subheadline)
+        preparation.adjustsFontForContentSizeCategory = true
+        preparation.isHidden = true
+        Self.styleCard(statusCard, views: [progressTitle, preparation, status, syncProgress, metricsStack])
+        for bar in [syncProgress, outgoingProgress, incomingProgress] {
+            bar.heightAnchor.constraint(equalToConstant: 6).isActive = true
+            bar.layer.cornerRadius = 3
+            bar.clipsToBounds = true
+        }
+        syncProgress.accessibilityLabel = "本次同步总进度"
+        outgoingProgress.accessibilityLabel = "发送进度"
+        incomingProgress.accessibilityLabel = "接收进度"
         syncProgress.isHidden = true
         syncProgress.accessibilityLabel = "本批次影像传输进度"
         nearbyDevices.axis = .vertical
@@ -609,18 +635,19 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         metricsStack.axis = .vertical
         metricsStack.spacing = 8
         metricsStack.isHidden = true
-        for (label, heading) in [(outgoingSummary, "本机发送给对方"), (incomingSummary, "本机从对方接收")] {
+        for (label, bar, heading) in [(outgoingSummary, outgoingProgress, "本机发送给对方"), (incomingSummary, incomingProgress, "本机从对方接收")] {
             label.text = heading + "：待核对"
             label.font = .preferredFont(forTextStyle: .subheadline)
             label.adjustsFontForContentSizeCategory = true
             label.numberOfLines = 0
             metricsStack.addArrangedSubview(label)
+            metricsStack.addArrangedSubview(bar)
         }
         let captions = [
-            Strings.text("已传输 / 批次容量", "Transferred / batch size", "転送済み / バッチ容量", "已傳輸 / 批次容量"),
+            Strings.text("已传输 / 本次待传", "Transferred / approved total", "転送済み / 承認済みの合計", "已傳輸 / 本次待傳"),
             Strings.text("相册原件总量", "Total originals", "アルバム原本の容量", "相簿原始檔總量"),
             Strings.text("当前速率", "Current rate", "現在の転送速度", "目前速率"),
-            Strings.text("本批次预计剩余", "Batch time left", "バッチの残り時間", "本批次預計剩餘")
+            Strings.text("当前方向预计剩余", "Time left in this direction", "この方向の残り時間", "目前方向預計剩餘")
         ]
         for start in [0, 2] {
             let row = UIStackView()
@@ -659,6 +686,11 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
     private func clearTransferMetrics() {
         syncProgress.isHidden = true
         syncProgress.progress = 0
+        outgoingProgress.progress = 0
+        incomingProgress.progress = 0
+        sentBytes = 0; receivedBytes = 0
+        approvedSend = 0; approvedReceive = 0
+        preparation.isHidden = true
         metricsStack.isHidden = true
         outgoingSummary.text = "本机发送给对方：待核对"
         incomingSummary.text = "本机从对方接收：待核对"
@@ -666,19 +698,29 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
 
     private func showTransfer(_ update: AppleAlbumSession.TransferStatus) {
         if status.text != update.message { status.text = update.message }
-        if #available(iOS 16.2, *) {
-            let activity = syncActivity as? NocturneTaskActivity
-            if let metrics = update.metrics {
-                activity?.update(phase: "传输中", percent: Int(metrics.fraction * 100),
-                                  rate: metrics.bytesPerSecond, done: metrics.done, total: metrics.total)
-            } else {
-                activity?.update(phase: "核对原片", percent: update.itemProgress.map { Int($0 * 100) })
-            }
+        if let step = update.preparation {
+            preparation.isHidden = false
+            preparation.text = ["核验本机原件", "对方核对本机发送清单", "本机核对对方接收清单", "双向测速", "等待双方确认"].enumerated().map {
+                ($0.offset < step ? "✓  " : $0.offset == step ? "●  " : "○  ") + $0.element
+            }.joined(separator: "\n")
+        }
+        if let send = update.approvedSend, let receive = update.approvedReceive {
+            approvedSend = send; approvedReceive = receive
+            sentBytes = 0; receivedBytes = 0
+            preparation.isHidden = true
+            outgoingSummary.text = "本机发送给对方：0 / \(byteFormatter.string(fromByteCount: send))"
+            incomingSummary.text = "本机从对方接收：0 / \(byteFormatter.string(fromByteCount: receive))"
+            outgoingProgress.progress = 0; incomingProgress.progress = 0
+            showMetricValues(["—", "—", "—", "—"])
+        }
+        if #available(iOS 16.2, *), approvedSend + approvedReceive == 0, update.metrics == nil {
+            (syncActivity as? NocturneTaskActivity)?.update(phase: "核对原片", percent: update.itemProgress.map { Int($0 * 100) })
         }
         func bytes(_ count: Int64) -> String {
             byteFormatter.string(fromByteCount: count)
         }
         guard let metrics = update.metrics else {
+            if approvedSend + approvedReceive > 0 { return }
             if let capacity = update.inventory {
                 showMetricValues(["—", bytes(capacity), "—", "—"])
             } else {
@@ -701,13 +743,21 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
             let receiving = direction == .receiving
             let summary = receiving ? incomingSummary : outgoingSummary
             let title = receiving ? "本机从对方接收" : "本机发送给对方"
-            let remaining = metrics.done == metrics.total ? "本批已传输" : "本批剩余 \(time)"
-            summary.text = "\(title)：本批 \(bytes(metrics.done)) / \(bytes(metrics.total)) · \(remaining)"
+            let remaining = metrics.done == metrics.total ? "本方向已传输" : "预计剩余 \(time)"
+            summary.text = "\(title)：\(bytes(metrics.done)) / \(bytes(metrics.total)) · \(remaining)"
+            if receiving { receivedBytes = metrics.done; incomingProgress.progress = metrics.fraction }
+            else { sentBytes = metrics.done; outgoingProgress.progress = metrics.fraction }
         }
-        showMetricValues(["\(bytes(metrics.done)) / \(bytes(metrics.total))", metrics.inventory.map(bytes) ?? "—", rate, time])
+        let overall = max(metrics.total, approvedSend + approvedReceive)
+        let done = min(overall, sentBytes + receivedBytes)
+        showMetricValues(["\(bytes(done)) / \(bytes(overall))", metrics.inventory.map(bytes) ?? "—", rate, time])
         syncProgress.isHidden = false
-        syncProgress.setProgress(metrics.fraction, animated: !UIAccessibility.isReduceMotionEnabled
-            && metrics.fraction > syncProgress.progress)
+        let fraction = Double(done) / Double(overall)
+        syncProgress.setProgress(Float(fraction), animated: false)
+        if #available(iOS 16.2, *) {
+            (syncActivity as? NocturneTaskActivity)?.update(phase: "传输中", percent: Int(fraction * 100),
+                rate: metrics.bytesPerSecond, done: done, total: overall)
+        }
     }
 
     private func showMetricValues(_ values: [String]) {
@@ -1352,7 +1402,10 @@ final class AppleAlbumContentsController: UITableViewController, UITableViewData
     private var working = false
     private var reviewJob: Task<Void, Never>?
     private var review: [(title: String, assets: [PHAsset])]?
+    private var diagnosticSections = Set<Int>()
     private let empty = UILabel()
+    private let reviewDetails = UILabel()
+    private let reviewProgress = UIProgressView(progressViewStyle: .default)
     private let editButton = UIBarButtonItem(title: "管理所选项", style: .plain, target: nil, action: nil)
     private let reviewButton = UIBarButtonItem(image: UIImage(systemName: "square.on.square"), style: .plain, target: nil, action: nil)
 
@@ -1432,6 +1485,7 @@ final class AppleAlbumContentsController: UITableViewController, UITableViewData
     private func refresh() {
         stopThumbnailPrefetch()
         review = nil
+        diagnosticSections.removeAll()
         navigationItem.prompt = nil
         title = album.title
         reviewButton.image = UIImage(systemName: "square.on.square")
@@ -1479,6 +1533,9 @@ final class AppleAlbumContentsController: UITableViewController, UITableViewData
         self.tableView(tableView, cancelPrefetchingForRowsAt: [indexPath])
     }
 
+    override func tableView(_ tableView: UITableView, willSelectRowAt indexPath: IndexPath) -> IndexPath? {
+        diagnosticSections.contains(indexPath.section) ? nil : indexPath
+    }
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) { updateActions() }
     override func tableView(_ tableView: UITableView, didDeselectRowAt indexPath: IndexPath) { updateActions() }
     private func updateActions() {
@@ -1493,16 +1550,19 @@ final class AppleAlbumContentsController: UITableViewController, UITableViewData
         guard !working else { return }
         if review != nil { refresh(); return }
         working = true
-        title = "正在核验原片"
+        title = "查重"
+        stopThumbnailPrefetch()
+        tableView.prefetchDataSource = nil
+        visibleReviewProgress(phase: "准备检查原片", done: 0, total: 0)
         reviewButton.image = UIImage(systemName: "xmark")
         reviewButton.accessibilityLabel = "取消检查"
         reviewJob = Task {
-            defer { reviewJob = nil; working = false; updateActions() }
+            defer { reviewJob = nil; working = false; tableView.tableHeaderView = nil; tableView.prefetchDataSource = self; updateActions() }
             do {
                 let scanned = try await PhotoAlbumDuplicates.scan(storage: storage, albumID: album.identifier, lease: lease) { [weak self] phase, done, total in
                     DispatchQueue.main.async {
                         guard let self = self, self.reviewJob != nil else { return }
-                        self.title = "\(phase) \(done)/\(total)"
+                        self.visibleReviewProgress(phase: phase, done: done, total: total)
                     }
                 }
                 try Task.checkCancellation()
@@ -1511,6 +1571,10 @@ final class AppleAlbumContentsController: UITableViewController, UITableViewData
                 review = scanned.result.groups.map { group in
                     let label = group.exact ? "完全重复" : group.video ? "视频封面与时长相似" : "相似候选"
                     return (label + " · \(group.members.count) 项", group.members.map { scanned.assets[$0] })
+                }
+                for (label, indexes) in [("原件不可读取", scanned.unreadable), ("缺少可用预览，无法比对相似度", scanned.visualUnavailable)] where !indexes.isEmpty {
+                    diagnosticSections.insert(review?.count ?? 0)
+                    review?.append((label + " · \(indexes.count) 项", indexes.map { scanned.assets[$0] }))
                 }
                 var details: [String] = []
                 if scanned.result.unavailable > 0 { details.append("\(scanned.result.unavailable) 项原片暂不可读取") }
@@ -1533,6 +1597,28 @@ final class AppleAlbumContentsController: UITableViewController, UITableViewData
             }
         }
         updateActions()
+    }
+
+    private func visibleReviewProgress(phase: String, done: Int, total: Int) {
+        if tableView.tableHeaderView == nil {
+            reviewDetails.font = .preferredFont(forTextStyle: .subheadline)
+            reviewDetails.adjustsFontForContentSizeCategory = true
+            reviewDetails.numberOfLines = 0
+            reviewProgress.heightAnchor.constraint(equalToConstant: 6).isActive = true
+            reviewProgress.clipsToBounds = true
+            reviewProgress.layer.cornerRadius = 3
+            let stack = UIStackView(arrangedSubviews: [reviewDetails, reviewProgress])
+            stack.axis = .vertical; stack.spacing = 10
+            stack.layoutMargins = UIEdgeInsets(top: 12, left: 22, bottom: 12, right: 22)
+            stack.isLayoutMarginsRelativeArrangement = true
+            let width = tableView.bounds.width
+            let height = stack.systemLayoutSizeFitting(CGSize(width: width, height: 0),
+                withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel).height
+            stack.frame = CGRect(x: 0, y: 0, width: width, height: max(76, height))
+            tableView.tableHeaderView = stack
+        }
+        reviewDetails.text = total > 0 ? "\(phase) · \(done) / \(total)" : phase
+        reviewProgress.progress = total > 0 ? Float(min(total, max(0, done))) / Float(total) : 0
     }
 
     @objc private func actions() {

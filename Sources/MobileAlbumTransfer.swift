@@ -44,7 +44,7 @@ enum MobileAlbumTransfer {
         guard ready["count"] as? Int == count else { throw MediaError193.changed }
         let batched = batchReceipts && enabled(ready["batchReceipts"])
         var seen = Set<String>(), pages = Set<String>(), bytes: Int64 = 0
-        let payload = PayloadProgress(report: onPayload)
+        let payload = PayloadProgress(approvedBytes: approval?.bytes, report: onPayload)
         while let page = try await source.nextPage() {
             try verify(page, count: count, seen: &seen, pages: &pages)
             let packet = try JSONSerialization.jsonObject(with: JSONEncoder().encode(page))
@@ -123,7 +123,7 @@ enum MobileAlbumTransfer {
             if batched { ready["batchReceipts"] = true }
             try await channel.sendObject(2, ready)
             var seen = Set<String>(), pages = Set<String>(), bytes: Int64 = 0
-            let payload = PayloadProgress(report: onPayload)
+            let payload = PayloadProgress(approvedBytes: approval?.bytes, report: onPayload)
             while true {
                 let packet = try await channel.receiveObject(1)
                 if packet["op"] as? String == "album-end1" {
@@ -290,26 +290,30 @@ enum MobileAlbumTransfer {
 
     private final class PayloadProgress {
         private let report: ((Int64, Int64, Double) -> Void)?
+        private let approvedBytes: Int64?
         private var total: Int64 = 0
+        private var completed: Int64 = 0
         private var tick: UInt64 = 0
         private var lastPayload: UInt64 = 0
         private var sent: Int64 = 0
         private var sampleBytes: Int64 = 0
         private var rate: Double = 0
 
-        init(report: ((Int64, Int64, Double) -> Void)?) {
+        init(approvedBytes: Int64?, report: ((Int64, Int64, Double) -> Void)?) {
+            self.approvedBytes = approvedBytes
             self.report = report
         }
 
         func beginPage(wanted: [String], items: [String: MobileAlbumManifest]) {
             guard let report else { return }
+            completed += sent
             total = wanted.reduce(0) { $0 + (items[$1]?.byteCount ?? 0) }
             let now = DispatchTime.now().uptimeNanoseconds
             if now - lastPayload > 1_500_000_000 { rate = 0 }
             tick = now
             sent = 0
             sampleBytes = 0
-            if total > 0 { report(0, total, rate) }
+            if total > 0 { report(completed, approvedBytes ?? completed + total, rate) }
         }
 
         func record(_ count: Int) {
@@ -325,7 +329,7 @@ enum MobileAlbumTransfer {
             }
             tick = now
             sampleBytes = sent
-            report(sent, total, rate)
+            report(completed + sent, approvedBytes ?? completed + total, rate)
         }
     }
 

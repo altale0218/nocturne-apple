@@ -38,6 +38,7 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
                     ["filmstrip", "swipeDismiss", "blur", "viewerAll", "date", "fine"],
                     ["videoDoubleTap", "viewerMuted", "hold", "openMark"],
                     ["preview"], ["mode", "boundary", "privacy"], ["release"]]
+        sections[6].append("storageAudit")
         if #available(iOS 15, *) { sections[6].append("crashReport") }
         if p.squareTiles { sections[1].insert("squareCorners", at: 2) }
         if storage.envelope.privateMode { sections[5].insert(contentsOf: ["password", "biometric"], at: 1) }
@@ -82,6 +83,7 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? { sections[section].isEmpty ? nil : titles[section] }
     private func label(_ id: String) -> String {
         if id == "crashReport" { return "上传崩溃报告" }
+        if id == "storageAudit" { return "本机存储明细" }
         switch id {
         case "filmstrip": return Strings.text("显示底部预览条", "Show the filmstrip", "プレビュー列を表示", "顯示底部預覽條")
         case "swipeDismiss": return Strings.text("下滑退出查看器", "Swipe down to close viewer", "下にスワイプして閉じる", "下滑退出檢視器")
@@ -215,9 +217,45 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         case "blur": number(id, current: storage.state.settings.blurRadius, range: 0...48) { $0.settings.blurRadius = $1 }
         case "mode": changeMode()
         case "boundary": message(label(id), Strings.text("缓存始终经过认证加密。Private 增加每次开启的密码验证，影响解锁耗时；不会逐帧验证密码或降低原片分辨率。系统相册中的原片仍由系统管理，不会因为开启 Private 自动隐藏或加密复制。本工程未经过安全审计。", "Caches always use authenticated encryption. Private adds startup password verification, affecting unlock time, not per-frame playback or original resolution. Originals in Photos remain managed by the system and are not hidden or copied by enabling Private. This engineering preview has not had a security audit.", "キャッシュは常に認証付き暗号化。Private は起動時のパスワード検証を追加し、解除時間に影響します。フレーム処理や元画像の解像度は変えません。システム写真の元ファイルは自動的に非表示や複製になりません。セキュリティ監査は未実施です。", "快取始終使用驗證加密。Private 增加啟動密碼驗證，影響解鎖時間，不影響逐幀播放與原片解析度。系統相簿原片不會自動隱藏或加密複製。本工程未經安全審計。"))
+        case "storageAudit": showStorageAudit()
         case "crashReport": if #available(iOS 15, *) { CrashReports209.shared.present(from: self) }
         case "release": if !storage.envelope.privateMode { navigationController?.pushViewController(AppleUpdateController(), animated: true) } else { showReleaseNotes() }
         default: break
+        }
+    }
+    private func showStorageAudit() {
+        let root = storage.root
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let files = FileManager.default
+            let parent = root.deletingLastPathComponent()
+            let categories = [("缩略图与预览缓存", "Cache"), ("同步实况原件归档", "AlbumOriginals"),
+                ("同步临时文件", "AlbumStaging"), ("同步回执", "AlbumSync"),
+                ("Private 媒体", "Media193"), ("临时导出文件", "ProtectedExport193")]
+            let roots = ["Nocturne", "NocturneOrdinary193", "NocturnePrivate193"].map {
+                parent.appendingPathComponent($0, isDirectory: true)
+            }
+            var lines: [String] = []
+            let keys: [URLResourceKey] = [.isRegularFileKey, .isSymbolicLinkKey, .totalFileAllocatedSizeKey, .fileSizeKey]
+            for (title, name) in categories {
+                var bytes: Int64 = 0
+                for library in roots {
+                    guard let entries = files.enumerator(at: library.appendingPathComponent(name), includingPropertiesForKeys: keys)
+                        else { continue }
+                    for case let url as URL in entries {
+                        autoreleasepool {
+                            guard let values = try? url.resourceValues(forKeys: Set(keys)), values.isRegularFile == true,
+                                  values.isSymbolicLink != true else { return }
+                            bytes += Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0)
+                        }
+                    }
+                }
+                lines.append(title + " · " + ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))
+            }
+            let summary = lines.joined(separator: "\n")
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.viewIfLoaded?.window != nil, self.presentedViewController == nil else { return }
+                self.message("本机存储明细", summary)
+            }
         }
     }
     private func choices(_ id: String, names: [String], values: [String], apply: @escaping (inout LibraryState, String) -> Void) {
@@ -463,7 +501,8 @@ private enum AppleUpdateNetwork {
         let data = try await read(url, source: source)
         let catalog = try JSONDecoder().decode(Catalog.self, from: data)
         guard catalog.schema == 1, catalog.ready, catalog.releases.count <= 8, !catalog.releases.isEmpty else { throw Invalid.catalog }
-        let offers = try catalog.releases.map(validate)
+        let offers = catalog.releases.compactMap { try? validate($0) }
+        guard !offers.isEmpty else { throw Invalid.catalog }
         return offers.filter { $0.build > installed && ($0.channel == "stable" || beta) && $0.downloads[source.rawValue] != nil }
             .max { $0.build < $1.build }
     }
@@ -478,7 +517,7 @@ private enum AppleUpdateNetwork {
               SecKeyVerifySignature(key, .rsaSignatureMessagePKCS1v15SHA256, payload as CFData, signature as CFData, nil)
               else { throw Invalid.catalog }
         let offer = try JSONDecoder().decode(Offer.self, from: payload)
-        guard offer.schema == 1, offer.kind == "apple", offer.bundle == Bundle.main.bundleIdentifier,
+        guard offer.schema == 1, offer.kind == "apple", offer.bundle == "com.nocturne.gallery",
               [ "stable", "beta" ].contains(offer.channel), (1...1_000_000).contains(offer.build),
               offer.version.range(of: #"^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$"#, options: .regularExpression) != nil,
               offer.sha256.range(of: #"^[a-f0-9]{64}$"#, options: .regularExpression) != nil,
@@ -604,7 +643,7 @@ private enum AppleUpdateNetwork {
         present(dialog, animated: true)
     }
     private struct Result: Sendable {
-        let source: AppleUpdateSource, offer: AppleUpdateNetwork.Offer?, succeeded: Bool
+        let source: AppleUpdateSource, offer: AppleUpdateNetwork.Offer?, failure: String?
     }
     private func check() {
         active?.cancel(); generation += 1
@@ -618,20 +657,31 @@ private enum AppleUpdateNetwork {
             await withTaskGroup(of: Result.self) { group in
                 for target in targets {
                     group.addTask {
-                        do { return Result(source: target, offer: try await AppleUpdateNetwork.check(target, installed: installed, beta: beta), succeeded: true) }
-                        catch { return Result(source: target, offer: nil, succeeded: false) }
+                        do { return Result(source: target, offer: try await AppleUpdateNetwork.check(target, installed: installed, beta: beta), failure: nil) }
+                        catch {
+                            let reason: String
+                            switch error {
+                            case AppleUpdateNetwork.Invalid.catalog, is DecodingError: reason = "目录格式或签名校验失败"
+                            case AppleUpdateNetwork.Invalid.endpoint: reason = "服务器响应或重定向无效"
+                            case let network as URLError: reason = "网络连接失败（\(network.errorCode)）"
+                            default: reason = "无法读取更新目录"
+                            }
+                            return Result(source: target, offer: nil, failure: reason)
+                        }
                     }
                 }
                 var tested = 0, succeeded = 0
+                var failures: [String] = []
                 for await result in group {
                     guard let self, !Task.isCancelled, self.generation == attempt else { group.cancelAll(); return }
                     tested += 1
-                    if result.succeeded { succeeded += 1 }
+                    if let failure = result.failure { failures.append("\(result.source.label) · \(failure)") }
+                    else { succeeded += 1 }
                     if let candidate = result.offer, candidate.build > (self.offer?.0.build ?? installed) { self.offer = (candidate, result.source) }
                     self.spinning = tested < targets.count
                     if let current = self.offer { self.status = "发现\(current.0.channel == "beta" ? "测试版" : "正式版") · \(current.0.version)" }
                     else if succeeded > 0 { self.status = "已是最新版本" }
-                    else if !self.spinning { self.status = "更新源暂不可用，请稍后重试" }
+                    else if !self.spinning { self.status = failures.joined(separator: "\n") }
                     self.tableView.reloadData()
                 }
             }

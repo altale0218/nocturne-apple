@@ -36,6 +36,7 @@ final class AppCoordinator {
                     ordinary = original
                     vault = try SecureStorage(root: parent.appendingPathComponent("NocturnePrivate193", isDirectory: true))
                 }
+                try? PhotoAlbumStaging.recoverAbandoned(in: ordinary.root)
                 do { try ordinary.unlock() }
                 catch {
                     DispatchQueue.main.async {

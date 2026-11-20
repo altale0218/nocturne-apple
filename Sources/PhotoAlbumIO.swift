@@ -5,16 +5,17 @@ import UIKit
 import UniformTypeIdentifiers
 
 /// Temporary originals are confined to one import/export, with device-unlock file protection.
-private final class PhotoAlbumStaging {
+final class PhotoAlbumStaging {
     let directory: URL
     private let manager = FileManager.default
     private static let preparation = NSLock()
     private static var preparedRoots = Set<String>()
 
-    init(storage: SecureStorage) throws {
-        Self.preparation.lock()
-        defer { Self.preparation.unlock() }
-        let root = storage.root.appendingPathComponent("AlbumStaging", isDirectory: true)
+    static func recoverAbandoned(in storageRoot: URL) throws {
+        preparation.lock()
+        defer { preparation.unlock() }
+        let manager = FileManager.default
+        let root = storageRoot.appendingPathComponent("AlbumStaging", isDirectory: true)
         let parent = try root.deletingLastPathComponent().resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
         guard parent.isDirectory == true, parent.isSymbolicLink == false else { throw MediaError193.unavailable }
         if !manager.fileExists(atPath: root.path) {
@@ -38,7 +39,12 @@ private final class PhotoAlbumStaging {
             }
             Self.preparedRoots.insert(root.path)
         }
-        directory = root.appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
+    }
+
+    init(storage: SecureStorage) throws {
+        try Self.recoverAbandoned(in: storage.root)
+        directory = storage.root.appendingPathComponent("AlbumStaging", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
         try manager.createDirectory(at: directory, withIntermediateDirectories: false,
                                     attributes: [.protectionKey: FileProtectionType.complete])
     }
@@ -90,7 +96,7 @@ final class PhotoAlbumSource: MobileAlbumTransfer.Source {
         self.lease = lease
         self.allowICloud = allowICloud
         self.rows = rows
-        self.byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.manifest.id, $0) })
+        self.byID = Dictionary(rows.map { ($0.manifest.id, $0) }, uniquingKeysWith: { first, _ in first })
         self.unavailable = unavailable
     }
 
@@ -100,8 +106,9 @@ final class PhotoAlbumSource: MobileAlbumTransfer.Source {
         let library = PhotoSyncLibrary(storage: storage)
         let archive = XiaomiOriginalArchive(storage: storage, lease: lease)
         var unavailable = selected.unavailable.count
-        let assets = selected.visible
-        let previous = Dictionary(uniqueKeysWithValues: (prior?.rows ?? []).map { ($0.asset.localIdentifier, $0) })
+        var identifiers = Set<String>()
+        let assets = selected.visible.filter { identifiers.insert($0.localIdentifier).inserted }
+        let previous = Dictionary((prior?.rows ?? []).map { ($0.asset.localIdentifier, $0) }, uniquingKeysWith: { first, _ in first })
         var ordered = [Row?](repeating: nil, count: assets.count)
         try await withThrowingTaskGroup(of: (Int, Row?).self) { workers in
             @Sendable func inspect(_ offset: Int) async throws -> (Int, Row?) {
@@ -302,6 +309,7 @@ final class PhotoAlbumTarget: MobileAlbumTransfer.Target {
     private(set) var unavailable = 0
     private(set) var metadataConflicts = 0
     private(set) var localUnverified = 0
+    private(set) var pendingIssues: [String: String] = [:]
     private(set) var undated = 0
     private(set) var total = 0
 
@@ -327,6 +335,7 @@ final class PhotoAlbumTarget: MobileAlbumTransfer.Target {
         metadataConflicts = 0
         localUnverified = 0
         undated = 0
+        pendingIssues.removeAll(keepingCapacity: true)
         guard count > 0 else { return }
         let selected = try library.albumContents(albumID, lease: lease)
         let known = try await PhotoAlbumSource.prepare(storage: storage, selected: selected,
@@ -356,10 +365,18 @@ final class PhotoAlbumTarget: MobileAlbumTransfer.Target {
             try Task.checkCancellation()
             if index.containsOriginal(item) {
                 duplicate += 1
+            } else if let receipt = try library.receipt(peer: peer, remoteID: item.id, lease: lease) {
+                if receipt.state != .confirmedDeleted,
+                   item.layout != .motion,
+                   let actual = verifiedOriginals[receipt.identifier]?.item,
+                   let verified = try? MobileAlbumManifest(id: item.id, item: actual),
+                   verified.key == item.key {
+                    duplicate += 1
+                } else {
+                    deferred += 1
+                }
             } else if item.captureMillis == nil
                         || (item.layout != .motion && !PHAssetCreationRequest.supportsAssetResourceTypes(item.resources.map { NSNumber(value: $0.role) })) {
-                deferred += 1
-            } else if try library.receipt(peer: peer, remoteID: item.id, lease: lease) != nil {
                 deferred += 1
             } else {
                 pending.append(item.id)
@@ -377,12 +394,12 @@ final class PhotoAlbumTarget: MobileAlbumTransfer.Target {
             try Task.checkCancellation()
             if manifest.captureMillis == nil {
                 undated += 1
-                deferItem(manifest)
+                deferItem(manifest, reason: "缺少可信拍摄日期")
                 continue
             }
             if let receipt = try library.receipt(peer: peer, remoteID: manifest.id, lease: lease) {
                 if receipt.state == .confirmedDeleted {
-                    deferItem(manifest)
+                    deferItem(manifest, reason: "以前已确认删除")
                     continue
                 }
                 do {
@@ -412,9 +429,9 @@ final class PhotoAlbumTarget: MobileAlbumTransfer.Target {
                 } catch is PhotoSyncLibrary.CreatedButUnverified {
                     try Task.checkCancellation()
                     try storage.validateResourceLease193(lease)
-                    deferItem(manifest)
+                    deferItem(manifest, reason: "照片已写入，系统回读尚未通过")
                 } catch MediaError193.changed {
-                    deferItem(manifest)
+                    deferItem(manifest, reason: "原件指纹与旧回执不符")
                 }
                 continue
             }
@@ -428,7 +445,8 @@ final class PhotoAlbumTarget: MobileAlbumTransfer.Target {
                 }
             }
             if index.containsOriginal(manifest) {
-                deferMetadataConflict(manifest)
+                if destinationAlbumID == nil { confirmMetadataDifference(manifest) }
+                else { deferItem(manifest, reason: "原件已存在，专辑位置或信息不同") }
                 continue
             }
             if try await reuseKnownOriginal(manifest, metadata: metadata) {
@@ -443,7 +461,7 @@ final class PhotoAlbumTarget: MobileAlbumTransfer.Target {
                 continue
             }
             if let placement = scheduled[manifest.transferKey] {
-                if placement != metadata { deferMetadataConflict(manifest) }
+                if placement != metadata { deferItem(manifest, reason: "同批原件的拍摄信息不同") }
             } else {
                 scheduled[manifest.transferKey] = metadata
                 wanted.append(manifest.id)
@@ -452,13 +470,21 @@ final class PhotoAlbumTarget: MobileAlbumTransfer.Target {
         return wanted
     }
 
-    private func deferMetadataConflict(_ asset: MobileAlbumManifest) {
-        if !deferred.contains(asset.id) { metadataConflicts += 1 }
-        deferItem(asset)
+    private func confirmMetadataDifference(_ asset: MobileAlbumManifest) {
+        if confirmed.insert(asset.id).inserted {
+            metadataConflicts += 1
+            reused += 1
+        }
     }
 
-    private func deferItem(_ asset: MobileAlbumManifest) {
+    private func deferItem(_ asset: MobileAlbumManifest, reason: String = "系统无法读取或写入原件") {
         if deferred.insert(asset.id).inserted { unavailable += 1 }
+        if pendingIssues.count < 100 {
+            let date = asset.captureMillis.map {
+                Date(timeIntervalSince1970: Double($0) / 1_000).formatted(date: .numeric, time: .shortened)
+            } ?? "日期未知"
+            pendingIssues[asset.id] = "\(date) · \(asset.layout.rawValue) · \(asset.id.prefix(8)) · \(reason)"
+        }
     }
 
     private func reuseKnownOriginal(_ manifest: MobileAlbumManifest, metadata: String) async throws -> Bool {
@@ -490,15 +516,18 @@ final class PhotoAlbumTarget: MobileAlbumTransfer.Target {
                 unverified = true
             }
         }
-        if conflict { deferMetadataConflict(manifest) }
-        else if unverified { deferItem(manifest) }
+        if conflict {
+            if destinationAlbumID == nil { confirmMetadataDifference(manifest) }
+            else { deferItem(manifest, reason: "原件已存在，专辑位置或信息不同") }
+        }
+        else if unverified { deferItem(manifest, reason: "本机候选原件暂不可读") }
         return conflict || unverified
     }
 
     private func restoreArchivedMotion(_ asset: MobileAlbumManifest) async throws -> Bool {
         guard let original = try archive.relation(peer: peer, peerItem: asset.id) else { return false }
         guard original.key == asset.key, try metadataKey(original) == metadataKey(asset) else {
-            deferMetadataConflict(asset)
+            deferItem(asset, reason: "旧同步归档与对方当前原件不同")
             return true
         }
         // The protected original was already committed before a previous Photos import.
@@ -764,7 +793,7 @@ enum PhotoAlbumDuplicates {
     }
 
     static func scan(storage: SecureStorage, albumID: String, lease: Int,
-                     progress: (String, Int, Int) -> Void) async throws -> (assets: [PHAsset], result: Results) {
+                     progress: (String, Int, Int) -> Void) async throws -> (assets: [PHAsset], result: Results, unreadable: [Int], visualUnavailable: [Int]) {
         let library = PhotoSyncLibrary(storage: storage)
         let selected = try library.albumContents(albumID, lease: lease)
         let source = try await PhotoAlbumSource.prepare(storage: storage, selected: selected,
@@ -772,7 +801,7 @@ enum PhotoAlbumDuplicates {
             progress("核验原片", done, total)
         }
         let assets = selected.visible
-        let byIdentifier = Dictionary(uniqueKeysWithValues: source.rows.map { ($0.asset.localIdentifier, $0.manifest.key) })
+        let byIdentifier = Dictionary(source.rows.map { ($0.asset.localIdentifier, $0.manifest.key) }, uniquingKeysWith: { first, _ in first })
         let raw = assets.map { byIdentifier[$0.localIdentifier] }
         let work = visualWorkItems(raw)
         let images = PHImageManager.default()
@@ -809,7 +838,14 @@ enum PhotoAlbumDuplicates {
             }
             return entries.sorted { $0.index < $1.index }
         }
-        return (assets, try groups(entries, unavailable: source.unavailable))
+        progress("比较相似指纹", 0, max(1, entries.count))
+        let result = try groups(entries, unavailable: source.unavailable)
+        progress("比较相似指纹", max(1, entries.count), max(1, entries.count))
+        let visualUnavailable = work.compactMap { batch -> Int? in
+            guard !batch.contains(where: { entries[$0].footprint != nil }) else { return nil }
+            return batch.first
+        }
+        return (assets, result, entries.filter { $0.raw == nil }.map(\.index), visualUnavailable)
     }
 
     static func visualWorkItems(_ originals: [String?]) -> [[Int]] {
@@ -834,8 +870,9 @@ enum PhotoAlbumDuplicates {
                 request.isNetworkAccessAllowed = false
                 request.deliveryMode = .fastFormat
                 request.resizeMode = .fast
-                var result: Fingerprint?
-                images.requestImage(for: asset, targetSize: CGSize(width: 64, height: 64), contentMode: .aspectFit, options: request) { image, _ in
+                let result: Fingerprint? = autoreleasepool {
+                    var fingerprint: Fingerprint?
+                    images.requestImage(for: asset, targetSize: CGSize(width: 64, height: 64), contentMode: .aspectFit, options: request) { image, _ in
                     guard let source = image?.cgImage else { return }
                     var luma = Array(repeating: UInt8(0), count: 72)
                     let drawn = luma.withUnsafeMutableBytes { bytes -> Bool in
@@ -846,7 +883,9 @@ enum PhotoAlbumDuplicates {
                         canvas.draw(source, in: CGRect(x: 0, y: 0, width: 9, height: 8))
                         return true
                     }
-                    if drawn { result = Fingerprint(luma) }
+                    if drawn { fingerprint = Fingerprint(luma) }
+                    }
+                    return fingerprint
                 }
                 complete.resume(returning: result)
             }
