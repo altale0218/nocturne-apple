@@ -221,7 +221,7 @@ enum MobileAlbumTransfer {
         func allows(_ item: MobileAlbumManifest) -> Bool { approved[item.id] == item.transferKey }
     }
 
-    static func previewSend(_ source: Source, channel: Channel) async throws -> PreviewTotals {
+    static func previewSend(_ source: Source, channel: Channel, progress: (Int, Int, Int) -> Void = { _, _, _ in }) async throws -> PreviewTotals {
         let count = source.count
         guard (0...maximumCount).contains(count), (0...(maximumCount - count)).contains(source.unavailable)
               else { throw MediaError193.tooLarge }
@@ -233,11 +233,13 @@ enum MobileAlbumTransfer {
             try verify(page, count: count, seen: &seen, pages: &pages)
             let body = try JSONSerialization.jsonObject(with: JSONEncoder().encode(page))
             try await channel.sendObject(1, packetFor("album-preview-page1", page: page.id, fields: ["manifest": body]))
+            progress(seen.count - page.assets.count, page.assets.count, count)
             let response = try await expect(channel, kind: 2, operation: "album-preview-result1", page: page.id)
             guard let pending = response["assets"] as? [String], let duplicate = response["duplicates"] as? Int,
                   let deferred = response["deferred"] as? Int else { throw MediaError193.malformed }
             let items = Dictionary(uniqueKeysWithValues: page.assets.map { ($0.id, $0) })
             try totals.record(.init(pending: pending, duplicates: duplicate, deferred: deferred), page: page, items: items)
+            progress(seen.count, 0, count)
         }
         guard seen.count == count else { throw MediaError193.changed }
         try await channel.sendObject(1, ["op": "album-preview-end1"])
@@ -245,7 +247,7 @@ enum MobileAlbumTransfer {
         return totals
     }
 
-    static func previewReceive(_ target: PhotoAlbumTarget, channel: Channel) async throws -> PreviewTotals {
+    static func previewReceive(_ target: PhotoAlbumTarget, channel: Channel, progress: (Int, Int, Int) -> Void = { _, _, _ in }) async throws -> PreviewTotals {
         let open = try await expect(channel, kind: 1, operation: "album-preview-open1")
         guard let count = open["count"] as? Int, (0...maximumCount).contains(count),
               let unavailable = open["unavailable"] as? Int, (0...(maximumCount - count)).contains(unavailable)
@@ -266,9 +268,11 @@ enum MobileAlbumTransfer {
             let page = try JSONDecoder().decode(MobileAlbumManifest.Page.self, from: JSONSerialization.data(withJSONObject: body))
             guard packet["batch"] as? String == page.id else { throw MediaError193.changed }
             try verify(page, count: count, seen: &seen, pages: &pages)
+            progress(seen.count - page.assets.count, page.assets.count, count)
             let items = Dictionary(uniqueKeysWithValues: page.assets.map { ($0.id, $0) })
             let choice = try target.preview(page)
             try totals.record(choice, page: page, items: items)
+            progress(seen.count, 0, count)
             try await channel.sendObject(2, packetFor("album-preview-result1", page: page.id, fields: [
                 "assets": choice.pending, "duplicates": choice.duplicates, "deferred": choice.deferred]))
         }

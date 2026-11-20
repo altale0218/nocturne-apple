@@ -118,9 +118,9 @@ final class SessionClock {
     }
 }
 enum Release {
-    static let history = "Nocturne 1.5.32\n加入 iOS 软件更新和长按菜单。\n\nNocturne 1.5.31\n普通相册先按原件查重、测速并确认，缩小图库间距。\n\nNocturne 1.5.30\n区分配对和连接页，显示传输失败阶段，补齐更新历史。\n\nNocturne 1.5.29\n已配对设备断线后在相同范围内重连，精简设备选择。\n\nNocturne 1.5.28\n分别核验每次 Android 配对连接，区分身份不一致的阶段。\n\nNocturne 1.5.27\n为附近设备提供独立配对卡片，加入崩溃报告上传。\n\nNocturne 1.5.26\n显示 Android 拒绝配对的具体原因。\n\nNocturne 1.5.25\n图库子页面改用横向转场，并显示配对失败阶段。\n\nNocturne 1.5.24\n细化连接与配对诊断，调整图库交互。\n\nNocturne 1.5.23\n调整图库手势、导航与同步界面。\n\nNocturne 1.5.22\n与 Android 对齐部分图库设置和 Private 功能。\n\nNocturne 1.5.21\n加入同步实时活动，连接时核对普通图库范围。\n\nNocturne 1.5.20\n调整查看器，验证整库同步连接。\n\nNocturne 1.5.19\n调整查看器手势、菜单锚点和预览条拖动。\n\nNocturne 1.5.18\n支持接收 Android 普通图库，调整 Apple 图库控件。\n\nNocturne 1.5.17\n直接进入普通图库，调整图库、查看器和同步。\n\nNocturne 1.5.16\n建立 Apple 客户端源码基线。"
-    static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.5.33"
-    static var notes: String { "Nocturne \(version) · Apple 开发预览\n\n预览条惯性更持久，连续划动可累积动力。实况照片按钮淡入淡出，图库操作按钮改为圆形，缩小照片之间的距离。\n\n设置搜索避免点击时重复刷新列表。普通相册双向预检需使用 Android 1.7.5 beta 或兼容版本。" }
+    static let history = "Nocturne 1.5.33\n优化查看器滑动、实况按钮和设置搜索。\n\nNocturne 1.5.32\n加入 iOS 软件更新和长按菜单。\n\nNocturne 1.5.31\n普通相册先按原件查重、测速并确认，缩小图库间距。\n\nNocturne 1.5.30\n区分配对和连接页，显示传输失败阶段，补齐更新历史。\n\nNocturne 1.5.29\n已配对设备断线后在相同范围内重连，精简设备选择。\n\nNocturne 1.5.28\n分别核验每次 Android 配对连接，区分身份不一致的阶段。\n\nNocturne 1.5.27\n为附近设备提供独立配对卡片，加入崩溃报告上传。\n\nNocturne 1.5.26\n显示 Android 拒绝配对的具体原因。\n\nNocturne 1.5.25\n图库子页面改用横向转场，并显示配对失败阶段。\n\nNocturne 1.5.24\n细化连接与配对诊断，调整图库交互。\n\nNocturne 1.5.23\n调整图库手势、导航与同步界面。\n\nNocturne 1.5.22\n与 Android 对齐部分图库设置和 Private 功能。\n\nNocturne 1.5.21\n加入同步实时活动，连接时核对普通图库范围。\n\nNocturne 1.5.20\n调整查看器，验证整库同步连接。\n\nNocturne 1.5.19\n调整查看器手势、菜单锚点和预览条拖动。\n\nNocturne 1.5.18\n支持接收 Android 普通图库，调整 Apple 图库控件。\n\nNocturne 1.5.17\n直接进入普通图库，调整图库、查看器和同步。\n\nNocturne 1.5.16\n建立 Apple 客户端源码基线。"
+    static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.5.34"
+    static var notes: String { "Nocturne \(version) · Apple 开发预览\n\n查看器入场时保持顶部按钮可见，更多菜单使用系统液态玻璃。图库新增可显示拍摄时间的快速滚动条。\n\n同步预检显示双向查重进度和独立的发送、接收报告。普通图库可从长按和多选转入 Private，在核验加密原件后请求删除系统相册原片。" }
 }
 enum Strings {
     static var language: String {

@@ -1,4 +1,5 @@
 import UIKit
+import Photos
 
 final class AppCoordinator {
     let window: UIWindow
@@ -50,14 +51,14 @@ final class AppCoordinator {
             } catch { DispatchQueue.main.async { self.showStorageFailure193() } }
         }
     }
-    private func landing(from source: UIViewController? = nil, importing asset: MediaAsset193? = nil) {
+    private func landing(from source: UIViewController? = nil, importing assets: [MediaAsset193] = []) {
         guard let storage = private193, let presenter = source ?? window.rootViewController,
               presenter.presentedViewController == nil, transientRepository199 == nil else { return }
         let didUnlock: () -> Void = { [weak self, weak presenter] in
             guard let self = self, self.active193 else { storage.lock(); return }
-            if let asset = asset, let presenter = presenter {
-                self.importIntoPrivate199(asset, storage: storage, presenter: presenter)
-            } else if asset == nil { self.switchLibrary193(storage) }
+            if !assets.isEmpty, let presenter = presenter {
+                self.importIntoPrivate199(assets, storage: storage, presenter: presenter)
+            } else if assets.isEmpty { self.switchLibrary193(storage) }
             else { storage.lock() }
         }
         let controller = LandingController(privateMode: storage.envelope.privateMode, biometricEnabled: storage.envelope.biometric193 == true)
@@ -85,6 +86,7 @@ final class AppCoordinator {
             }
         }
         controller.configureSlide()
+        if !assets.isEmpty { controller.loadViewIfNeeded(); controller.status193("原片通过加密核验后，系统会询问是否删除。使用 iCloud 照片时，删除会同步到其他设备。") }
         presenter.present(controller, animated: true)
         if storage.exportCleanupPending193 > 0 { controller.loadViewIfNeeded(); controller.status193("上次移出的受保护临时原件尚待清理，新的移出操作已暂停。") }
     }
@@ -126,24 +128,46 @@ final class AppCoordinator {
             gallery.showRelease()
         }
     }
-    private func importIntoPrivate199(_ asset: MediaAsset193, storage: SecureStorage, presenter: UIViewController) {
+    private func importIntoPrivate199(_ assets: [MediaAsset193], storage: SecureStorage, presenter: UIViewController) {
         let repo = PhotoRepository(storage: storage)
         transientRepository199 = repo
-        repo.moveToPrivate193(asset, removeOriginal: false) { [weak self, weak presenter, weak repo] result in
-            guard let self = self, let repo = repo, self.transientRepository199 === repo else { return }
+        var verified: [MediaAsset193] = []
+        let progress = UIAlertController(title: "转入 Private", message: "准备加密原件…", preferredStyle: .alert)
+        let finish: (Set<String>) -> Void = { [weak self, weak presenter, weak repo, weak progress] removed in
+            guard let self, let repo, self.transientRepository199 === repo else { return }
             self.transientRepository199 = nil
             repo.lock(); storage.lock()
-            guard self.active193, let presenter = presenter, presenter.viewIfLoaded?.window != nil,
-                  presenter.presentedViewController == nil else { return }
-            let message: String
-            switch result {
-            case .success: message = "已加密保存到 Private，系统相册原片仍保留。"
-            case .failure: message = "转入未完成，系统相册原片仍保留。"
+            let showResult = {
+                guard self.active193, let presenter, presenter.viewIfLoaded?.window != nil,
+                      presenter.presentedViewController == nil else { return }
+                let remaining = assets.count - removed.count
+                let message = "已加密核验 \(verified.count)/\(assets.count) 项。\n已从系统图库删除 \(removed.count) 项。" +
+                    (remaining > 0 ? "\n\(remaining) 项未完成转入，可重新尝试。" : "") +
+                    (removed.isEmpty ? "" : "\n若要立即清除原片，请在系统照片的「最近删除」中永久删除。")
+                let result = UIAlertController(title: "Private", message: message, preferredStyle: .alert)
+                result.addAction(UIAlertAction(title: "好", style: .default))
+                presenter.present(result, animated: true)
             }
-            let alert = UIAlertController(title: "Private", message: message, preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "好", style: .default))
-            presenter.present(alert, animated: true)
+            if let progress, progress.presentingViewController != nil { progress.dismiss(animated: true, completion: showResult) }
+            else { showResult() }
         }
+        func process(_ index: Int) {
+            guard active193, transientRepository199 === repo, storage.isUnlocked193 else { return }
+            guard index < assets.count else {
+                guard !verified.isEmpty, let lease = try? storage.resourceLease193() else { finish([]); return }
+                progress.message = "等待系统相册确认删除 \(verified.count) 项原片…"
+                NativeAssetRevision.delete(verified.compactMap(\.native), check: {
+                    try storage.validateResourceLease193(lease)
+                }, completion: { result in finish((try? result.get()) ?? []) })
+                return
+            }
+            progress.message = "正在加密并核验 \(index + 1)/\(assets.count)"
+            repo.moveToPrivate193(assets[index], removeOriginal: false) { result in
+                if case .success = result { verified.append(assets[index]) }
+                process(index + 1)
+            }
+        }
+        presenter.present(progress, animated: true) { process(0) }
     }
     func willResignActive() {
         guard storage?.envelope.privateMode == true, privacyCover == nil else { return }

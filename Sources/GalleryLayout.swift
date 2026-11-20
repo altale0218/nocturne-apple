@@ -24,7 +24,7 @@ final class GalleryLayout: UICollectionViewLayout {
         let fingerprint = "\(mode.rawValue)/\(sizePreset)/\(square)/\(names)/\(ratios.hashValue)/\(dayStarts.hashValue)"
         guard width != available || key != fingerprint else { return }
         width = available; key = fingerprint; cached.removeAll(keepingCapacity: true); prefixBottom.removeAll(keepingCapacity: true); rowTop.removeAll(keepingCapacity: true); headers.removeAll(keepingCapacity: true)
-        let gap: CGFloat = 4, padding: CGFloat = 12, footer: CGFloat = names ? 28 : 0
+        let gap: CGFloat = 2, padding: CGFloat = 12, footer: CGFloat = names ? 28 : 0
         let inner = max(1, available - padding * 2)
         let columns = GalleryRules122.columns(width: Double(inner), preset: sizePreset)
         func ratio(_ i: Int) -> CGFloat { square ? 1 : max(0.1, min(10, ratios[i])) }

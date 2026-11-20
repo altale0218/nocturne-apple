@@ -88,6 +88,10 @@ private struct AppleAlbumSession {
                 case "album-error-verify1": return "Android 未能核验收到的原件或回执"
                 case "album-error-access1": return "Android 同步授权已撤销或图库已锁定"
                 case "album-error-plan1": return "Android 图库在确认后发生变化，请重新核对"
+                case "album-error-catalog1": return "Android 无法准备或核对接收目录"
+                case "album-error-payload1": return "Android 接收原件数据或写入暂存区失败"
+                case "album-error-publish1": return "Android 无法将已核验的原件写入系统相册"
+                case "album-error-receipt1": return "Android 无法提交这一批的保存回执"
                 default: return "Android 接收或写入原件失败"
                 }
             case AppleSyncTransport.Failure.malformed, MediaError193.changed, MediaError193.verification:
@@ -294,13 +298,18 @@ private struct AppleAlbumSession {
             progress(TransferStatus(message: "正在交换原件指纹、核对已同步与重复内容…"))
             var outbound = MobileAlbumTransfer.PreviewTotals(), inbound = MobileAlbumTransfer.PreviewTotals()
             if let source = catalog.source {
-                outbound = try await MobileAlbumTransfer.previewSend(source, channel: channel)
+                outbound = try await MobileAlbumTransfer.previewSend(source, channel: channel) { done, active, total in
+                    progress(TransferStatus(message: "核对发送项目 · 已查 \(done) · 正在核对 \(active) · 待查 \(total - done - active)"))
+                }
                 source.rewindForReconnect()
             }
             if let target = catalog.target {
-                inbound = try await MobileAlbumTransfer.previewReceive(target, channel: channel)
+                inbound = try await MobileAlbumTransfer.previewReceive(target, channel: channel) { done, active, total in
+                    progress(TransferStatus(message: "核对接收项目 · 已查 \(done) · 正在核对 \(active) · 待查 \(total - done - active)"))
+                }
             }
             stage = "双向线路测速"
+            progress(TransferStatus(message: "正在用测试包测量双向传输速度…"))
             let sample = 512 * 1024
             let started = DispatchTime.now().uptimeNanoseconds
             try await channel.send(4, Data(repeating: 0, count: sample))
@@ -1103,10 +1112,56 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         guard viewIfLoaded?.window != nil, presentedViewController == nil, !Task.isCancelled else { return false }
         return await withCheckedContinuation { reply in
             codeReply = reply
-            let alert = UIAlertController(title: "确认相册同步", message: report, preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "取消", style: .cancel) { [weak self] _ in self?.replyToCode(false) })
-            alert.addAction(UIAlertAction(title: "同意传输原件", style: .default) { [weak self] _ in self?.replyToCode(true) })
-            present(alert, animated: true)
+            let controller = UIViewController()
+            controller.view.backgroundColor = .systemGroupedBackground
+            controller.isModalInPresentation = true
+            let scroll = UIScrollView()
+            let stack = UIStackView()
+            stack.axis = .vertical
+            stack.spacing = 16
+            scroll.translatesAutoresizingMaskIntoConstraints = false
+            stack.translatesAutoresizingMaskIntoConstraints = false
+            controller.view.addSubview(scroll)
+            scroll.addSubview(stack)
+            NSLayoutConstraint.activate([
+                scroll.leadingAnchor.constraint(equalTo: controller.view.safeAreaLayoutGuide.leadingAnchor),
+                scroll.trailingAnchor.constraint(equalTo: controller.view.safeAreaLayoutGuide.trailingAnchor),
+                scroll.topAnchor.constraint(equalTo: controller.view.safeAreaLayoutGuide.topAnchor),
+                scroll.bottomAnchor.constraint(equalTo: controller.view.safeAreaLayoutGuide.bottomAnchor),
+                stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 20),
+                stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -20),
+                stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 20),
+                stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -20),
+                stack.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -40)
+            ])
+            stack.addArrangedSubview(Self.label("确认相册同步", style: .title2))
+            let sections = report.components(separatedBy: "\n\n")
+            for (index, icon) in ["arrow.up.circle.fill", "arrow.down.circle.fill"].enumerated() where sections.indices.contains(index) {
+                let name = index == 0 ? "发送到 Android" : "接收到 iPhone"
+                let heading = Self.label(name, style: .headline)
+                let image = UIImageView(image: UIImage(systemName: icon))
+                image.tintColor = .systemBlue
+                image.setContentHuggingPriority(.required, for: .horizontal)
+                let row = UIStackView(arrangedSubviews: [image, heading])
+                row.spacing = 8
+                let contents = String(sections[index].dropFirst("【发送】".count))
+                let card = UIStackView()
+                Self.styleCard(card, views: [row, Self.label(contents, style: .body)])
+                stack.addArrangedSubview(card)
+            }
+            if sections.count > 2 { stack.addArrangedSubview(Self.label(sections[2], style: .footnote)) }
+            for (title, icon, accepted) in [("同意传输原件", "arrow.left.arrow.right", true), ("取消", "xmark", false)] {
+                var config = accepted ? UIButton.Configuration.filled() : UIButton.Configuration.tinted()
+                config.title = title
+                config.image = UIImage(systemName: icon)
+                config.imagePadding = 8
+                let button = UIButton(configuration: config)
+                button.addAction(UIAction { [weak self, weak controller] _ in
+                    controller?.dismiss(animated: true) { self?.replyToCode(accepted) }
+                }, for: .touchUpInside)
+                stack.addArrangedSubview(button)
+            }
+            present(controller, animated: true)
         }
     }
 

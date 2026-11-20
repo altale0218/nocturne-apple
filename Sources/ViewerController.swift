@@ -59,7 +59,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
     private var stripFlingBoost: CGFloat = 1
     private let stripItemWidth: CGFloat = 40
     private let stripSpacing: CGFloat = 4
-    var addPrivate199: ((UIViewController, MediaAsset193) -> Void)?
+    var addPrivate199: ((UIViewController, [MediaAsset193]) -> Void)?
     var openingFrame199: CGRect?
     var openingImage199: UIImage?
     var returnFrame199: ((String, UIView) -> CGRect?)?
@@ -88,11 +88,12 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         back.frame = CGRect(x: 12, y: 8, width: 48, height: 48); more.autoresizingMask = [.flexibleLeftMargin]; more.frame = CGRect(x: 260, y: 8, width: 48, height: 48)
         for button in [back, more] { button.tintColor = .white; button.backgroundColor = UIColor(white: 0, alpha: 0.25); button.layer.cornerRadius = 16; chrome.addSubview(button) }
         more.backgroundColor = UIColor(white: 0.14, alpha: 0.58)
-        more.layer.cornerRadius = 24; more.clipsToBounds = true
+        more.layer.cornerRadius = 24; more.clipsToBounds = false
         more.accessibilityLabel = "更多查看器选项"
         more.layer.shadowOpacity = 0
         if #available(iOS 15, *) {
             var plain = UIButton.Configuration.plain()
+            if #available(iOS 26, *) { plain = .glass(); more.backgroundColor = .clear }
             plain.image = UIImage(systemName: "ellipsis", withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold))
             plain.baseForegroundColor = .white
             plain.cornerStyle = .capsule
@@ -440,7 +441,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
     private func addToPrivate199() {
         guard let add = addPrivate199, assets.indices.contains(selected), assets[selected].native != nil,
               !storage.envelope.privateMode else { return }
-        add(self, assets[selected])
+        add(self, [assets[selected]])
     }
     private func updateNativeMenu193() {
         guard let button = moreButton193 else { return }
@@ -451,7 +452,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         if #available(iOS 14, *) {
             var entries: [UIMenuElement] = []
             if assets[selected].native != nil && !storage.envelope.privateMode && addPrivate199 != nil {
-                entries.append(UIAction(title: "加入 Private（保留原片）", image: UIImage(systemName: "lock.shield")) { [weak self] _ in self?.addToPrivate199() })
+                entries.append(UIAction(title: "加入 Private", image: UIImage(systemName: "lock.shield")) { [weak self] _ in self?.addToPrivate199() })
             }
             if assets[selected].encrypted != nil { entries.append(UIAction(title: "移出到系统相册", image: UIImage(systemName: "square.and.arrow.up")) { [weak self] _ in self?.restorePrivate193() }) }
             if assets[selected].native != nil && storage.envelope.privateMode { entries.append(UIAction(title: "转入私密相册并删除系统原片", image: UIImage(systemName: "lock.shield")) { [weak self] _ in self?.movePrivate193() }) }
@@ -469,7 +470,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
     }
     @objc private func menu() {
         let alert = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
-        if assets[selected].native != nil && !storage.envelope.privateMode && addPrivate199 != nil { alert.addAction(UIAlertAction(title: "加入 Private（保留原片）", style: .default) { [weak self] _ in self?.addToPrivate199() }) }
+        if assets[selected].native != nil && !storage.envelope.privateMode && addPrivate199 != nil { alert.addAction(UIAlertAction(title: "加入 Private", style: .default) { [weak self] _ in self?.addToPrivate199() }) }
         if assets[selected].encrypted != nil { alert.addAction(UIAlertAction(title: "移出到系统相册", style: .default) { [weak self] _ in self?.restorePrivate193() }) }
         if assets[selected].native != nil && storage.envelope.privateMode { alert.addAction(UIAlertAction(title: "转入私密相册并删除系统原片", style: .default) { [weak self] _ in self?.movePrivate193() }) }
         if let mark = storage.state.records[assets[selected].localIdentifier]?.mark { alert.addAction(UIAlertAction(title: Strings.text("跳转标点", "Jump to bookmark", "マークへ移動", "跳轉標點") + " · " + time(mark), style: .default) { [weak self] _ in guard let self = self else { return }; self.timeline.value = Float(mark); self.beginSeek(); self.changeSeek(); self.endSeek() }) }
@@ -596,7 +597,9 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
     private func ghost199(_ photo: UIImage, at frame: CGRect) -> UIImageView {
         let ghost = UIImageView(image: photo)
         ghost.contentMode = .scaleAspectFill; ghost.clipsToBounds = true
-        ghost.frame = frame; ghost.layer.cornerRadius = 10; view.addSubview(ghost)
+        ghost.frame = stage.convert(frame, from: view); ghost.layer.cornerRadius = 10
+        ghost.isUserInteractionEnabled = false
+        stage.insertSubview(ghost, belowSubview: chrome)
         return ghost
     }
     override func viewDidAppear(_ animated: Bool) {
@@ -609,10 +612,10 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         openingImage199 = nil; openingFrame199 = nil
         let end = mediaFrame199(), ghost = ghost199(photo, at: view.convert(origin, from: window))
         guard !end.isEmpty else { ghost.removeFromSuperview(); return }
-        media.alpha = 0; chrome.alpha = 0; controls.alpha = 0
+        media.alpha = 0; controls.alpha = 0
         UIView.animate(withDuration: 0.34, delay: 0, usingSpringWithDamping: 0.87, initialSpringVelocity: 0, options: [.allowUserInteraction], animations: {
-            ghost.frame = end; ghost.layer.cornerRadius = 0
-            self.chrome.alpha = 1; self.controls.alpha = 1
+            ghost.frame = self.stage.convert(end, from: self.view); ghost.layer.cornerRadius = 0
+            self.controls.alpha = 1
         }) { _ in self.media.alpha = 1; ghost.removeFromSuperview() }
     }
     @objc private func close() {
@@ -626,7 +629,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
             let ghost = ghost199(photo, at: start)
             ghost.layer.cornerRadius = 0; media.alpha = 0
             UIView.animate(withDuration: 0.31, delay: 0, usingSpringWithDamping: 0.9, initialSpringVelocity: 0, options: [.beginFromCurrentState], animations: {
-                ghost.frame = target; ghost.layer.cornerRadius = 10
+                ghost.frame = self.stage.convert(target, from: self.view); ghost.layer.cornerRadius = 6
                 self.backdrop.alpha = 0; self.view.backgroundColor = .clear
                 self.chrome.alpha = 0; self.controls.alpha = 0
             }) { _ in self.dismiss(animated: false) }

@@ -332,7 +332,7 @@ enum AppleSyncTransport {
                 if result.kind != 8 { return result }
                 if result.data == Data("waiting173".utf8) { continue }
                 if ordinaryAlbumTransfer, let code = String(data: result.data, encoding: .utf8),
-                   ["album-error-space1", "album-error-storage1", "album-error-verify1", "album-error-access1", "album-error-plan1", "album-error-io1"].contains(code) {
+                   ["album-error-space1", "album-error-storage1", "album-error-verify1", "album-error-access1", "album-error-plan1", "album-error-catalog1", "album-error-payload1", "album-error-publish1", "album-error-receipt1", "album-error-io1"].contains(code) {
                     throw Failure.receiver(code)
                 }
                 throw Failure.malformed

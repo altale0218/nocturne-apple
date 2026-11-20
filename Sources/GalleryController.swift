@@ -36,13 +36,22 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
     private var wantedPreviewIDs = Set<String>()
     private var layerObservers: [String: NSKeyValueObservation] = [:]
     private var galleryVisible = false
+    private let scrollRail = UIView()
+    private let scrollThumb = UIView()
+    private let scrollDate = UILabel()
+    private let scrollDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter
+    }()
     private var placedInsets193 = false
     private var videoWatermarkTick: CFTimeInterval = 0
     private var cycleStarted: [String: CFTimeInterval] = [:]
     private var previewSeeking = Set<String>()
     var locked: (() -> Void)?
     var openPrivate193: (() -> Void)?
-    var importPrivate199: ((UIViewController, MediaAsset193) -> Void)?
+    var importPrivate199: ((UIViewController, [MediaAsset193]) -> Void)?
     init(repository: PhotoRepository, storage: SecureStorage, clock: SessionClock) { self.repository = repository; self.storage = storage; self.clock = clock; super.init(nibName: nil, bundle: nil) }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func viewDidLoad() {
@@ -52,7 +61,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         foreground.addSubview(background)
         collection = UICollectionView(frame: .zero, collectionViewLayout: layout)
         collection.backgroundColor = .clear; collection.alwaysBounceVertical = true
-        collection.contentInsetAdjustmentBehavior = .never; collection.showsHorizontalScrollIndicator = false
+        collection.contentInsetAdjustmentBehavior = .never; collection.showsHorizontalScrollIndicator = false; collection.showsVerticalScrollIndicator = false
         let pinch = UIPinchGestureRecognizer(target: self, action: #selector(resizeGrid193(_:)))
         gridPinch = pinch
         collection.addGestureRecognizer(pinch)
@@ -72,6 +81,23 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         collection.register(MediaCell.self, forCellWithReuseIdentifier: MediaCell.reuse)
         collection.register(CaptureDayHeader199.self, forSupplementaryViewOfKind: GalleryLayout.dayHeader, withReuseIdentifier: GalleryLayout.dayHeader)
         foreground.addSubview(collection)
+        scrollThumb.layer.cornerRadius = 2
+        scrollThumb.backgroundColor = .secondaryLabel
+        scrollThumb.isUserInteractionEnabled = false
+        scrollRail.addSubview(scrollThumb)
+        let scrub = UIPanGestureRecognizer(target: self, action: #selector(scrubGallery193(_:)))
+        scrub.maximumNumberOfTouches = 1
+        scrollRail.addGestureRecognizer(scrub)
+        scrollDate.backgroundColor = .secondarySystemBackground
+        scrollDate.textColor = .label
+        scrollDate.font = .preferredFont(forTextStyle: .footnote)
+        scrollDate.adjustsFontSizeToFitWidth = true
+        scrollDate.textAlignment = .center
+        scrollDate.layer.cornerRadius = 8
+        scrollDate.clipsToBounds = true
+        scrollDate.isHidden = true
+        foreground.addSubview(scrollRail)
+        foreground.addSubview(scrollDate)
         toolbar.axis = .horizontal; toolbar.alignment = .center; toolbar.spacing = 8; toolbar.distribution = .fill
         let nav = Theme.button("line.3.horizontal", target: self, action: #selector(navigate)); nav.widthAnchor.constraint(equalToConstant: 44).isActive = true
         toolbar.addArrangedSubview(nav)
@@ -106,6 +132,10 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         if !placedInsets193 || atTop { collection.contentOffset.y = -collection.contentInset.top }
         else if previousTop != collection.contentInset.top { collection.contentOffset.y += previousTop - collection.contentInset.top }
         placedInsets193 = true
+        let railTop = toolbarGlass193.frame.maxY + 12
+        scrollRail.frame = CGRect(x: view.bounds.width - safe.right - 18, y: railTop, width: 18,
+                                  height: max(0, view.bounds.height - safe.bottom - railTop - 12))
+        updateScrollRail193()
         panel.restore(in: foreground)
         if let overlay = sidebar193 {
             overlay.frame = view.bounds
@@ -208,7 +238,7 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         cell.selection193(active: selecting193, selected: selected193.contains(id))
         if selecting193 && selected193.contains(id) { collectionView.selectItem(at: indexPath, animated: false, scrollPosition: []) }
         else { collectionView.deselectItem(at: indexPath, animated: false) }
-        cell.represented = id; cell.showName = false; cell.contentView.layer.cornerRadius = layout.square ? (p.roundedSquare ? 10 : 0) : 16; cell.image.contentMode = layout.square ? .scaleAspectFill : .scaleAspectFit; cell.name.textColor = Theme.text(dark)
+        cell.represented = id; cell.showName = false; cell.contentView.layer.cornerRadius = layout.square ? (p.roundedSquare ? 6 : 0) : 9; cell.image.contentMode = layout.square ? .scaleAspectFill : .scaleAspectFit; cell.name.textColor = Theme.text(dark)
         cell.name.text = nil
         var facts: [String] = []
         if filter == "star" { facts.append("#\(indexPath.item + 1)") }
@@ -256,7 +286,43 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         present(viewer, animated: false)
     }
     func collectionView(_ collectionView: UICollectionView, prefetchItemsAt indexPaths: [IndexPath]) { for path in indexPaths where path.item < shown.count { repository.thumbnail(shown[path.item]) { _ in } } }
+    private var scrollSpan193: CGFloat {
+        max(0, collection.contentSize.height + collection.contentInset.top + collection.contentInset.bottom - collection.bounds.height)
+    }
+    private func updateScrollRail193() {
+        let span = scrollSpan193, height = scrollRail.bounds.height
+        scrollRail.isHidden = span <= 1 || height < 48
+        guard !scrollRail.isHidden else { scrollDate.isHidden = true; return }
+        let thumbHeight = min(height, max(32, height * collection.bounds.height / (span + collection.bounds.height)))
+        let top = collection.contentOffset.y + collection.contentInset.top
+        let fraction = min(1, max(0, top / span))
+        let y = fraction * (height - thumbHeight)
+        scrollThumb.frame = CGRect(x: 12, y: y, width: 4, height: thumbHeight)
+        if !scrollDate.isHidden {
+            let item = collection.indexPathsForVisibleItems
+                .filter { shown.indices.contains($0.item) }
+                .sorted()
+                .first { (layout.layoutAttributesForItem(at: $0)?.frame.maxY ?? 0) > top }
+            let date = item.flatMap { shown[$0.item].creationDate }
+            scrollDate.text = date.map { scrollDateFormatter.string(from: $0) } ?? "拍摄时间未知"
+            let centerY = min(height - 16, max(16, y + thumbHeight / 2))
+            let width = max(1, min(200, scrollRail.frame.minX - 16))
+            scrollDate.frame = CGRect(x: scrollRail.frame.minX - width - 4,
+                                      y: scrollRail.frame.minY + centerY - 16, width: width, height: 32)
+        }
+    }
+    @objc private func scrubGallery193(_ gesture: UIPanGestureRecognizer) {
+        guard gesture.state == .began || gesture.state == .changed else { scrollDate.isHidden = true; return }
+        guard !scrollRail.isHidden, sidebar193 == nil, !pinchInProgress else { return }
+        let half = scrollThumb.bounds.height / 2
+        let y = gesture.location(in: scrollRail).y
+        let fraction = min(1, max(0, (y - half) / max(1, scrollRail.bounds.height - 2 * half)))
+        scrollDate.isHidden = false
+        collection.setContentOffset(CGPoint(x: collection.contentOffset.x, y: fraction * scrollSpan193 - collection.contentInset.top), animated: false)
+        updateScrollRail193()
+    }
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        updateScrollRail193()
         guard !previewScheduled else { return }; previewScheduled = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in self?.previewScheduled = false; self?.updatePreviews() }
     }
@@ -897,7 +963,15 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
                 guard let self, let path = self.menuPath193(assetID) else { return }
                 self.confirmDelete193([self.shown[path.item]])
             }
-            return UIMenu(children: [open, like, select, delete])
+            var actions: [UIMenuElement] = [open, like, select]
+            if let self, !self.storage.envelope.privateMode,
+               let path = self.menuPath193(assetID), self.shown[path.item].native != nil {
+                actions.append(UIAction(title: "加入 Private", image: UIImage(systemName: "lock.shield")) { [weak self] _ in
+                    guard let self, let path = self.menuPath193(assetID) else { return }
+                    self.importPrivate199?(self, [self.shown[path.item]])
+                })
+            }
+            return UIMenu(children: actions + [delete])
         }
     }
     private func menuPath193(_ assetID: String) -> IndexPath? {
@@ -912,6 +986,13 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
             self.storage.update { state in for id in self.selected193 { var value = state.records[id] ?? MediaRecord(); value.favorite = true; state.records[id] = value } }
             do { try self.storage.save(); self.reload() } catch { self.selectionFailure193(error) }
         })
+        let originals = shown.filter { selected193.contains($0.localIdentifier) && $0.native != nil }
+        if !storage.envelope.privateMode, !originals.isEmpty {
+            alert.addAction(UIAlertAction(title: "加入 Private", style: .default) { [weak self] _ in
+                guard let self else { return }
+                DispatchQueue.main.async { self.importPrivate199?(self, originals) }
+            })
+        }
         alert.addAction(UIAlertAction(title: "删除所选项目", style: .destructive) { _ in self.confirmBatchDelete193() })
         alert.addAction(UIAlertAction(title: "取消", style: .cancel)); anchor(alert); present(alert, animated: true)
     }
