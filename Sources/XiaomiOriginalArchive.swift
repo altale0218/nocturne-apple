@@ -225,9 +225,12 @@ final class XiaomiOriginalArchive {
                 let bytes = try releaseCopy(resource)
                 if bytes > 0 { return .released }
                 if try released(resource) { return .released }
-            } catch let error as PHPhotosError where error.code == .networkAccessRequired || error.code == .networkError {
+            } catch let error as PHPhotosError where error.code == .networkAccessRequired {
                 networkRequired = true
             } catch {
+                if #available(iOS 16, *), (error as? PHPhotosError)?.code == .networkError {
+                    networkRequired = true
+                }
                 if Task.isCancelled { return .unprocessed }
                 try check()
             }
