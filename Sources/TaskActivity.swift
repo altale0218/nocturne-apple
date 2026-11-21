@@ -10,6 +10,8 @@ struct NocturneTaskAttributes: ActivityAttributes {
         var bytesPerSecond: Int64?
         var done: Int64?
         var total: Int64?
+        var itemsDone: Int?
+        var itemsTotal: Int?
     }
     let kind: Kind
 }

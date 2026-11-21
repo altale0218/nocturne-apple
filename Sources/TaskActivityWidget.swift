@@ -31,7 +31,7 @@ struct NocturneTaskWidget: Widget {
                 Image(systemName: icon(context))
             } compactTrailing: {
                 Text(context.isStale ? "等待" : context.state.percent.map { "\($0)%" } ?? context.state.phase)
-                    .monospacedDigit().lineLimit(1)
+                    .monospacedDigit().lineLimit(1).minimumScaleFactor(0.75)
             } minimal: {
                 Image(systemName: icon(context))
             }
@@ -50,6 +50,7 @@ struct NocturneTaskWidget: Widget {
         if context.isStale { return "等待任务更新" }
         var values = [context.state.phase]
         if let done = context.state.done, let total = context.state.total { values.append("\(bytes(done))/\(bytes(total))") }
+        if let done = context.state.itemsDone, let total = context.state.itemsTotal { values.append("\(done)/\(total) 项") }
         if let rate = context.state.bytesPerSecond { values.append(bytes(rate) + "/s") }
         return values.joined(separator: " · ")
     }

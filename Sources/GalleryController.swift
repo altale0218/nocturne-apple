@@ -254,7 +254,6 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         cell.facts.text = facts.joined(separator: " · "); cell.facts.isHidden = facts.isEmpty
         cell.protectedBadge193.isHidden = !storage.envelope.privateMode || asset.encrypted == nil
         cell.videoIcon.isHidden = asset.mediaType != .video
-        repository.thumbnail(asset) { [weak cell] image in guard cell?.represented == id else { return }; cell?.image.image = image }
         bind(cell, player: previews[id], id: id)
         cell.accessibilityLabel = cell.name.text; cell.accessibilityTraits = .button
         return cell
@@ -292,7 +291,39 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
         }
         present(viewer, animated: false)
     }
-    func collectionView(_ collectionView: UICollectionView, prefetchItemsAt indexPaths: [IndexPath]) { for path in indexPaths where path.item < shown.count { repository.thumbnail(shown[path.item]) { _ in } } }
+    func collectionView(_ collectionView: UICollectionView, willDisplay collectionCell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
+        guard let cell = collectionCell as? MediaCell, shown.indices.contains(indexPath.item) else { return }
+        let asset = shown[indexPath.item], id = asset.localIdentifier
+        if let request = visiblePosters.removeValue(forKey: ObjectIdentifier(cell)) { repository.manager.cancelImageRequest(request) }
+        let token = UUID()
+        let key = ObjectIdentifier(cell)
+        visiblePosterTokens[key] = token
+        repository.thumbnail(asset) { [weak self, weak cell] image in
+            guard let self, let cell, let image, self.visiblePosterTokens[key] == token, cell.represented == id else { return }
+            cell.image.image = image
+            if let request = self.visiblePosters.removeValue(forKey: key) { self.repository.manager.cancelImageRequest(request) }
+        }
+        guard cell.image.image == nil else { return }
+        let request = repository.visiblePreview(asset) { [weak self, weak cell] image in
+            guard let self, let cell, self.visiblePosterTokens[key] == token,
+                  cell.represented == id, cell.image.image == nil else { return }
+            cell.image.image = image
+        }
+        if request != PHInvalidImageRequestID { visiblePosters[key] = request }
+    }
+
+    func collectionView(_ collectionView: UICollectionView, didEndDisplaying collectionCell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
+        let key = ObjectIdentifier(collectionCell)
+        visiblePosterTokens.removeValue(forKey: key)
+        if let request = visiblePosters.removeValue(forKey: key) { repository.manager.cancelImageRequest(request) }
+    }
+
+    func collectionView(_ collectionView: UICollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
+        for path in indexPaths.prefix(8) where shown.indices.contains(path.item) { repository.thumbnail(shown[path.item]) { _ in } }
+    }
+    private var visiblePosters: [ObjectIdentifier: PHImageRequestID] = [:]
+    private var visiblePosterTokens: [ObjectIdentifier: UUID] = [:]
+
     private var scrollSpan193: CGFloat {
         max(0, collection.contentSize.height + collection.contentInset.top + collection.contentInset.bottom - collection.bounds.height)
     }

@@ -42,6 +42,12 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         if #available(iOS 15, *) { sections[6].append("crashReport") }
         if p.squareTiles { sections[1].insert("squareCorners", at: 2) }
         if storage.envelope.privateMode { sections[5].insert(contentsOf: ["password", "biometric"], at: 1) }
+        #if !NOCTURNE_LEGACY
+        if #available(iOS 16.2, *), !storage.envelope.privateMode {
+            if NocturneTaskActivity.shipped { sections[4].append(contentsOf: ["activityCache", "activitySync"]) }
+            else { sections[4].append("activityUnavailable") }
+        }
+        #endif
         if p.previewVideos { sections[4].append("limit"); sections[4].append("markLoop"); if p.markerPreview122 == true { sections[4].append("markWindow") } }
         if p.mode == .galaxy && !p.reducedMotion { sections[1].append("speed") }
         if p.videoDoubleTap204 ?? true { sections[3].insert(contentsOf: ["back", "forward"], at: 1) }
@@ -111,6 +117,9 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         case "views": return Strings.text("显示观看次数", "Show view counts", "閲覧回数を表示", "顯示觀看次數")
         case "duration": return Strings.text("显示视频时长", "Show video duration", "動画の長さを表示", "顯示影片時長")
         case "sync": return Strings.text("开启自动同步", "Sync on open", "起動時に同期", "開啟自動同步")
+        case "activityCache": return "实时活动 · 缩略图准备"
+        case "activitySync": return "实时活动 · 图库同步"
+        case "activityUnavailable": return "实时活动 · 当前安装包未包含扩展"
         case "preview": return Strings.text("同时预览视频", "Video previews", "動画プレビュー", "同時預覽影片")
         case "limit": return Strings.text("并行视频上限", "Preview limit", "同時動画の上限", "並行影片上限")
         case "speed": return Strings.text("镜头移动速度", "Camera speed", "カメラの速度", "鏡頭移動速度")
@@ -129,7 +138,14 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         cell.detailTextLabel?.text = nil
         cell.textLabel?.text = label(id); cell.textLabel?.font = .systemFont(ofSize: 14); cell.textLabel?.numberOfLines = 2
         let switches = ["square": p.squareTiles, "squareCorners": p.roundedSquare, "motion": p.reducedMotion, "names": p.groupDates199 ?? true, "views": p.showViews, "duration": p.showDuration, "preview": p.previewVideos, "date": p.showDate122 ?? true, "hold": p.holdSpeed122 ?? true, "openMark": p.openAtMarker122 ?? true, "markLoop": p.markerPreview122 ?? false, "filmstrip": p.showFilmstrip204 ?? true, "swipeDismiss": p.swipeDismiss199 ?? true, "viewerMuted": p.viewerMuted204 ?? false, "videoDoubleTap": p.videoDoubleTap204 ?? true, "viewerAll": p.viewerBackgroundAll122 ?? true]
-        if let value = switches[id] {
+        var switchValue = switches[id]
+        #if !NOCTURNE_LEGACY
+        if #available(iOS 16.2, *) {
+            if id == "activityCache" { switchValue = NocturneTaskActivity.wants(.cache) }
+            if id == "activitySync" { switchValue = NocturneTaskActivity.wants(.sync) }
+        }
+        #endif
+        if let value = switchValue {
             let toggle = (cell.accessoryView as? UISwitch) ?? UISwitch()
             toggle.removeTarget(self, action: #selector(toggled(_:)), for: .valueChanged)
             toggle.accessibilityIdentifier = id
@@ -144,6 +160,11 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
             cell.accessoryType = .disclosureIndicator
             cell.selectionStyle = .default
         }
+        #if !NOCTURNE_LEGACY
+        if #available(iOS 16.2, *), (id == "activityCache" || id == "activitySync"), !NocturneTaskActivity.systemEnabled {
+            cell.detailTextLabel?.text = "系统已关闭"
+        }
+        #endif
         if id == "size", let index = GalleryRules122.gallerySizes.firstIndex(of: p.sizePreset) { cell.detailTextLabel?.text = GalleryRules122.gallerySizeTitles[index] }
         if id == "lead" { cell.detailTextLabel?.text = "\(Int(p.markerLead)) s" }
         if id == "markWindow" { cell.detailTextLabel?.text = "\(Int(p.markerWindow)) s" }
@@ -158,6 +179,15 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         return cell
     }
     @objc private func toggled(_ sender: UISwitch) {
+        #if !NOCTURNE_LEGACY
+        if #available(iOS 16.2, *) {
+            switch sender.accessibilityIdentifier {
+            case "activityCache": NocturneTaskActivity.setEnabled(sender.isOn, for: .cache); return
+            case "activitySync": NocturneTaskActivity.setEnabled(sender.isOn, for: .sync); return
+            default: break
+            }
+        }
+        #endif
         storage.update { state in
             switch sender.accessibilityIdentifier {
             case "filmstrip": state.settings.showFilmstrip204 = sender.isOn
@@ -217,6 +247,7 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         case "blur": number(id, current: storage.state.settings.blurRadius, range: 0...48) { $0.settings.blurRadius = $1 }
         case "mode": changeMode()
         case "boundary": message(label(id), Strings.text("缓存始终经过认证加密。Private 增加每次开启的密码验证，影响解锁耗时；不会逐帧验证密码或降低原片分辨率。系统相册中的原片仍由系统管理，不会因为开启 Private 自动隐藏或加密复制。本工程未经过安全审计。", "Caches always use authenticated encryption. Private adds startup password verification, affecting unlock time, not per-frame playback or original resolution. Originals in Photos remain managed by the system and are not hidden or copied by enabling Private. This engineering preview has not had a security audit.", "キャッシュは常に認証付き暗号化。Private は起動時のパスワード検証を追加し、解除時間に影響します。フレーム処理や元画像の解像度は変えません。システム写真の元ファイルは自動的に非表示や複製になりません。セキュリティ監査は未実施です。", "快取始終使用驗證加密。Private 增加啟動密碼驗證，影響解鎖時間，不影響逐幀播放與原片解析度。系統相簿原片不會自動隱藏或加密複製。本工程未經安全審計。"))
+        case "activityUnavailable": message("实时活动", "此安装包省略了实时活动扩展。请安装保留扩展的完整 IPA，并在 iOS 的 Nocturne 设置中允许实时活动。")
         case "storageAudit": showStorageAudit()
         case "crashReport": if #available(iOS 15, *) { CrashReports209.shared.present(from: self) }
         case "release": if !storage.envelope.privateMode { navigationController?.pushViewController(AppleUpdateController(), animated: true) } else { showReleaseNotes() }

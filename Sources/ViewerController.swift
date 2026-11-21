@@ -44,6 +44,8 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
     private var adjacentPreview: DispatchWorkItem?
     private let pagePoster = UIImageView()
     private var pagePosterIndex: Int?
+    private var pagePosterRequest = PHInvalidImageRequestID
+    private var pendingPage: Int?
     private var backdropWork: DispatchWorkItem?
     private weak var liveButton199: UIButton?
     private var liveAvailable199: Bool?
@@ -142,6 +144,14 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
             button.tintColor = .white
             chrome.addSubview(button)
         }
+        // Match the other round viewer controls while keeping the Live Photo outline dark.
+        live.backgroundColor = UIColor(white: 0.86, alpha: 0.82)
+        live.tintColor = .black
+        if #available(iOS 15, *), var configuration = live.configuration {
+            configuration.image = UIImage(systemName: "livephoto")?.withTintColor(.black, renderingMode: .alwaysOriginal)
+            configuration.baseForegroundColor = .black
+            live.configuration = configuration
+        }
         controls.addSubview(actions); view.addSubview(controls)
         let stripLayout = UICollectionViewFlowLayout(); stripLayout.scrollDirection = .horizontal; stripLayout.minimumLineSpacing = stripSpacing; stripLayout.itemSize = CGSize(width: stripItemWidth, height: 52)
         strip = UICollectionView(frame: .zero, collectionViewLayout: stripLayout); strip.backgroundColor = .clear; strip.dataSource = self; strip.delegate = self; strip.showsHorizontalScrollIndicator = false; strip.decelerationRate = .normal
@@ -194,15 +204,17 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         guard !closing199, assets.indices.contains(index) else { return }
         if !posterOnly { stripCommit?.cancel(); stripPreview = false }
         let reuseSharpImage = keepingPoster && index == selected && fullReady193 && assets[index].mediaType == .image
+        let initialPoster = generation == 0 ? openingImage199 : nil
         generation += 1; let token = generation; selected = index; fullReady193 = reuseSharpImage
         backdropWork?.cancel()
         adjacentPreview?.cancel()
         holding = false; holdLocked = false; speedHint.isHidden = true; rate = baseRate; media.transform = .identity
         stopPlayer(); repository.manager.cancelImageRequest(request)
+        image.layer.removeAllAnimations()
         zoom.setZoomScale(1, animated: false)
         if !keepingPoster {
             let cell = strip.cellForItem(at: IndexPath(item: index, section: 0)) as? MediaCell
-            image.image = cell?.image.image ?? (count || posterOnly ? nil : openingImage199)
+            image.image = cell?.represented == assets[index].localIdentifier ? (cell?.image.image ?? initialPoster) : initialPoster
         }
         precision.image = nil
         precision.isHidden = true
@@ -541,7 +553,8 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         let dx = gesture.translation(in: zoom).x, width = max(1, zoom.bounds.width)
         if gesture.state == .began {
             pageAnimationEpoch += 1
-            pagePosterIndex = nil; pagePoster.isHidden = true; pagePoster.image = nil
+            if pendingPage != nil { finishPageSwap() }
+            else { clearPagePoster() }
             media.layer.removeAllAnimations()
             media.transform = .identity
             paging = true; fade?.cancel()
@@ -565,16 +578,8 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
             let destination = selected + (dx < 0 ? 1 : -1)
             let valid = assets.indices.contains(destination)
             media.transform = CGAffineTransform(translationX: dx * (valid ? 1 : 0.25), y: 0)
-            guard valid else { pagePosterIndex = nil; pagePoster.isHidden = true; return }
-            if pagePosterIndex != destination {
-                pagePosterIndex = destination
-                let asset = assets[destination]
-                pagePoster.image = (strip.cellForItem(at: IndexPath(item: destination, section: 0)) as? MediaCell)?.image.image
-                repository.thumbnail(asset, pixels: 480) { [weak self] photo in
-                    guard let self, self.pagePosterIndex == destination, self.paging, let photo else { return }
-                    self.pagePoster.image = photo
-                }
-            }
+            guard valid else { clearPagePoster(); return }
+            preparePagePoster(destination)
             pagePoster.frame = zoom.frame.offsetBy(dx: dx + (dx < 0 ? width : -width), dy: 0)
             pagePoster.isHidden = false
         }
@@ -583,25 +588,74 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
             let direction = abs(dx) >= 18 ? dx : velocity
             let destination = selected + (direction < 0 ? 1 : -1)
             let commit = gesture.state == .ended && assets.indices.contains(destination) && (abs(dx) > width * 0.17 || abs(velocity) > 570)
+            pendingPage = commit ? destination : nil
             let epoch = pageAnimationEpoch
             let sign: CGFloat = direction < 0 ? -1 : 1
+            if commit && pagePosterIndex != destination {
+                preparePagePoster(destination)
+                pagePoster.frame = zoom.frame.offsetBy(dx: dx - sign * width, dy: 0)
+                pagePoster.isHidden = false
+            }
             UIView.animate(withDuration: storage.state.settings.reducedMotion ? 0 : 0.18, delay: 0, options: [.curveEaseOut, .beginFromCurrentState, .allowUserInteraction]) {
                 self.media.transform = commit ? CGAffineTransform(translationX: sign * width, y: 0) : .identity
                 self.pagePoster.frame = self.zoom.frame.offsetBy(dx: commit ? 0 : -sign * width, dy: 0)
             } completion: { _ in
                 guard epoch == self.pageAnimationEpoch, !self.closing199 else { return }
-                if commit {
-                    let poster = self.pagePosterIndex == destination ? self.pagePoster.image : nil
-                    if let poster { self.image.image = poster }
-                    self.show(destination, keepingPoster: poster != nil)
-                }
-                self.media.transform = .identity
-                self.pagePosterIndex = nil; self.pagePoster.isHidden = true; self.pagePoster.image = nil
+                self.finishPageSwap()
                 self.paging = false
                 self.activate()
             }
         }
     }
+    private func clearPagePoster() {
+        repository.manager.cancelImageRequest(pagePosterRequest)
+        pagePosterRequest = PHInvalidImageRequestID
+        pagePosterIndex = nil
+        pagePoster.isHidden = true
+        pagePoster.image = nil
+    }
+
+    private func finishPageSwap() {
+        let destination = pendingPage
+        pendingPage = nil
+        UIView.performWithoutAnimation {
+            if let destination {
+                media.isHidden = true
+                media.layer.removeAllAnimations()
+                let poster = pagePosterIndex == destination ? pagePoster.image : nil
+                image.layer.removeAllAnimations()
+                image.image = poster
+                show(destination, keepingPoster: poster != nil)
+                view.layoutIfNeeded()
+                media.isHidden = false
+            }
+            media.transform = .identity
+            clearPagePoster()
+        }
+    }
+
+    private func preparePagePoster(_ destination: Int) {
+        guard pagePosterIndex != destination else { return }
+        clearPagePoster()
+        pagePosterIndex = destination
+        let asset = assets[destination]
+        let cell = strip.cellForItem(at: IndexPath(item: destination, section: 0)) as? MediaCell
+        pagePoster.image = cell?.represented == asset.localIdentifier ? cell?.image.image : nil
+        let epoch = pageAnimationEpoch
+        if pagePoster.image == nil {
+            pagePosterRequest = repository.visiblePreview(asset) { [weak self] photo in
+                guard let self, self.pageAnimationEpoch == epoch, self.pagePosterIndex == destination,
+                      self.paging, self.pagePoster.image == nil else { return }
+                self.pagePoster.image = photo
+            }
+        }
+        repository.thumbnail(asset, pixels: 480) { [weak self] photo in
+            guard let self, self.pageAnimationEpoch == epoch, self.pagePosterIndex == destination,
+                  self.paging, let photo else { return }
+            self.pagePoster.image = photo
+        }
+    }
+
     @objc private func holdSpeed(_ gesture: UILongPressGestureRecognizer) {
         if assets[selected].mediaSubtypes.contains(.photoLive) { previewLive193(gesture); return }
         guard let player = player else { return }
@@ -730,6 +784,7 @@ final class ViewerController: UIViewController, UIScrollViewDelegate, UICollecti
         }
     }
     private func stopPlayer() {
+        liveStop199?.cancel(); liveStop199 = nil
         liveStop199?.cancel()
         privateLiveObservation193?.invalidate(); privateLiveObservation193 = nil; privateLive193?.pause(); privateLive193 = nil; playerLayer.opacity = 1
         liveHolding193 = false; repository.manager.cancelImageRequest(liveRequest193); live193.layer.removeAllAnimations(); live193.stopPlayback(); live193.livePhoto = nil; live193.alpha = 0

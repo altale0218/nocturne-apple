@@ -101,6 +101,24 @@ final class PhotoRepository: NSObject, PHPhotoLibraryChangeObserver {
         externalChange = changed
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(120), execute: changed)
     }
+    @discardableResult
+    func visiblePreview(_ asset: MediaAsset193, completion: @escaping (UIImage) -> Void) -> PHImageRequestID {
+        guard let native = asset.native else { return PHInvalidImageRequestID }
+        let token = epoch
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .fastFormat
+        options.resizeMode = .fast
+        options.isNetworkAccessAllowed = false
+        return manager.requestImage(for: native, targetSize: CGSize(width: 192, height: 192),
+                                    contentMode: .aspectFit, options: options) { [weak self] image, info in
+            guard let image, info?[PHImageCancelledKey] as? Bool != true else { return }
+            DispatchQueue.main.async {
+                guard self?.epoch == token else { return }
+                completion(image)
+            }
+        }
+    }
+
     private func options() -> PHImageRequestOptions {
         let options = PHImageRequestOptions()
         options.isNetworkAccessAllowed = false
@@ -140,8 +158,8 @@ final class PhotoRepository: NSObject, PHPhotoLibraryChangeObserver {
                         guard let image = image else { self.finishThumbnail(key, image: nil, token: token); return }
                         self.disk.async {
                             let decoded = self.decoded(image)
-                            if let url = url, let data = decoded.jpegData(compressionQuality: 0.86) { try? self.storage.write(data, to: url) }
                             DispatchQueue.main.async { self.finishThumbnail(key, image: decoded, token: token) }
+                            if let url = url, let data = decoded.jpegData(compressionQuality: 0.86) { try? self.storage.write(data, to: url) }
                         }
                     }
                 }
@@ -327,7 +345,7 @@ final class PhotoRepository: NSObject, PHPhotoLibraryChangeObserver {
         preparationFailed = 0
         guard !list.isEmpty else { progress?(1, ""); return }
         #if !NOCTURNE_LEGACY
-        if #available(iOS 16.2, *), !storage.envelope.privateMode, list.count >= 40 {
+        if #available(iOS 16.2, *), !storage.envelope.privateMode, list.count >= 40, NocturneTaskActivity.shipped {
             let activity = (cacheActivity as? NocturneTaskActivity) ?? NocturneTaskActivity(.cache)
             cacheActivity = activity
             activity.start("准备中")
@@ -354,7 +372,8 @@ final class PhotoRepository: NSObject, PHPhotoLibraryChangeObserver {
                     let remaining = elapsed / max(0.1, completedWeight) * max(0, totalWeight - completedWeight)
                     #if !NOCTURNE_LEGACY
                     if #available(iOS 16.2, *) {
-                        (self.cacheActivity as? NocturneTaskActivity)?.update(phase: "准备中", percent: Int(completedWeight / max(1, totalWeight) * 100))
+                        (self.cacheActivity as? NocturneTaskActivity)?.update(phase: "准备中",
+                            percent: Int(completedWeight / max(1, totalWeight) * 100), itemsDone: done, itemsTotal: list.count)
                     }
                     #endif
                     self.progress?(completedWeight / max(1, totalWeight), Strings.text("准备缩略图", "Preparing thumbnails", "サムネイルを準備中", "準備縮圖") + " · \(Int(ceil(remaining))) s")

@@ -714,7 +714,9 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
             showMetricValues(["—", "—", "—", "—"])
         }
         if #available(iOS 16.2, *), approvedSend + approvedReceive == 0, update.metrics == nil {
-            (syncActivity as? NocturneTaskActivity)?.update(phase: "核对原片", percent: update.itemProgress.map { Int($0 * 100) })
+            let phases = ["核验本机", "核对发送", "核对接收", "双向测速", "等待确认"]
+            let phase = update.preparation.flatMap { phases.indices.contains($0) ? phases[$0] : nil } ?? "核对原片"
+            (syncActivity as? NocturneTaskActivity)?.update(phase: phase, percent: update.itemProgress.map { Int($0 * 100) })
         }
         func bytes(_ count: Int64) -> String {
             byteFormatter.string(fromByteCount: count)

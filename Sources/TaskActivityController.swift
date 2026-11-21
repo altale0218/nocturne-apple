@@ -13,9 +13,33 @@ final class NocturneTaskActivity {
 
     init(_ kind: NocturneTaskAttributes.Kind) { self.kind = kind }
 
+    static var shipped: Bool {
+        guard Bundle.main.object(forInfoDictionaryKey: "NSSupportsLiveActivities") as? Bool == true,
+              let plugins = Bundle.main.builtInPlugInsURL else { return false }
+        return FileManager.default.fileExists(atPath: plugins.appendingPathComponent("NocturneTaskActivity.appex").path)
+    }
+
+    private static func preference(_ kind: NocturneTaskAttributes.Kind) -> String {
+        "liveActivities.nocturne." + kind.rawValue
+    }
+
+    static func wants(_ kind: NocturneTaskAttributes.Kind) -> Bool {
+        UserDefaults.standard.object(forKey: preference(kind)) as? Bool ?? true
+    }
+
+    static var systemEnabled: Bool { ActivityAuthorizationInfo().areActivitiesEnabled }
+
+    static func setEnabled(_ enabled: Bool, for kind: NocturneTaskAttributes.Kind) {
+        UserDefaults.standard.set(enabled, forKey: preference(kind))
+        if !enabled {
+            let running = Activity<NocturneTaskAttributes>.activities.filter { $0.attributes.kind == kind }
+            Task { for item in running { await item.end(nil, dismissalPolicy: .immediate) } }
+        }
+    }
+
     func start(_ phase: String) {
-        guard activity == nil, UIApplication.shared.applicationState == .active,
-              ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+        guard activity == nil, Self.shipped, Self.wants(kind), UIApplication.shared.applicationState == .active,
+              Self.systemEnabled else { return }
         if !Self.cleaned {
             Self.cleaned = true
             let leftovers = Activity<NocturneTaskAttributes>.activities
@@ -28,10 +52,13 @@ final class NocturneTaskActivity {
         lastUpdate = ProcessInfo.processInfo.systemUptime
     }
 
-    func update(phase: String, percent: Int? = nil, rate: Int64? = nil, done: Int64? = nil, total: Int64? = nil) {
-        guard let activity = activity else { return }
+    func update(phase: String, percent: Int? = nil, rate: Int64? = nil, done: Int64? = nil, total: Int64? = nil,
+                itemsDone: Int? = nil, itemsTotal: Int? = nil) {
+        if let current = activity, current.activityState == .ended || current.activityState == .dismissed { return }
+        if activity == nil { start(phase); lastUpdate = -.infinity }
+        guard let activity, Self.wants(kind), Self.systemEnabled else { return }
         let state = State(phase: phase, percent: percent.map { min(100, max(0, $0)) },
-                          bytesPerSecond: rate, done: done, total: total)
+                          bytesPerSecond: rate, done: done, total: total, itemsDone: itemsDone, itemsTotal: itemsTotal)
         let now = ProcessInfo.processInfo.systemUptime
         guard state != lastState, state.phase != lastState?.phase || now - lastUpdate >= 2 else { return }
         lastState = state
