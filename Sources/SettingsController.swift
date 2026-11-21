@@ -308,28 +308,34 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         }
         guard let lease = try? storage.resourceLease193() else { return }
         let alert = UIAlertController(title: "释放实况原件归档？",
-            message: "仅释放已核验保存在系统相册中的实况照片所对应的 Android 原件副本。保留系统实况和查重记录。日后如需逐字节还原 Android 文件，请保留 Android 原件或另外备份。",
+            message: "仅释放已核验保存在系统相册中的实况照片所对应的 Android 原件副本。保留系统实况和查重记录。允许 iCloud 回读时，系统可联网读取对应的实况资源。日后如需逐字节还原 Android 文件，请保留 Android 原件或另外备份。",
             preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: Strings.cancel, style: .cancel))
-        alert.addAction(UIAlertAction(title: "核验并释放", style: .destructive) { [weak self] _ in
-            self?.releaseArchive(lease: lease)
+        alert.addAction(UIAlertAction(title: "仅核验本机并释放", style: .destructive) { [weak self] _ in
+            self?.releaseArchive(lease: lease, allowICloud: false)
+        })
+        alert.addAction(UIAlertAction(title: "允许 iCloud 回读并释放", style: .destructive) { [weak self] _ in
+            self?.releaseArchive(lease: lease, allowICloud: true)
         })
         present(alert, animated: true)
     }
 
-    private func releaseArchive(lease: Int) {
+    private func releaseArchive(lease: Int, allowICloud: Bool) {
         let storage = self.storage
         showArchiveProgress("正在读取相册")
         archiveCleanup = Task.detached(priority: .utility) { [weak self] in
             let archive = XiaomiOriginalArchive(storage: storage, lease: lease)
             let result: String
             do {
-                let summary = try await archive.releaseVerified(library: PhotoSyncLibrary(storage: storage)) { [weak self] done, total in
+                let summary = try await archive.releaseVerified(library: PhotoSyncLibrary(storage: storage), allowICloud: allowICloud) { [weak self] done, total in
                     DispatchQueue.main.async { self?.showArchiveProgress("核验 \(done) / \(total)") }
                 }
-                let size = ByteCountFormatter.string(fromByteCount: summary.bytes, countStyle: .file)
-                result = (Task.isCancelled ? "已停止核验。" : "") + "已释放 \(summary.count) 份归档，约 \(size)。" +
-                    (summary.unverified == 0 ? "" : "\n保留了 \(summary.unverified) 项未通过核验或无法释放的归档。")
+                let lines = XiaomiOriginalArchive.ReleaseStatus.allCases.compactMap { status -> String? in
+                    guard let amount = summary.amounts[status] else { return nil }
+                    let size = ByteCountFormatter.string(fromByteCount: amount.bytes, countStyle: .file)
+                    return "\(status.rawValue) · \(amount.count) 份 · \(size)"
+                }
+                result = lines.isEmpty ? "未发现实况原件归档。" : lines.joined(separator: "\n")
             } catch {
                 result = Task.isCancelled ? "已停止。可以再次运行以继续核验。" : "未能完成核验。请检查相册访问权限后再试。"
             }

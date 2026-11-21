@@ -136,42 +136,103 @@ final class XiaomiOriginalArchive {
         return Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0)
     }
 
-    struct ReleaseSummary {
-        var count = 0
-        var bytes: Int64 = 0
-        var unverified = 0
+    enum ReleaseStatus: String, CaseIterable, Hashable {
+        case released = "已释放"
+        case needsNetwork = "需要 iCloud 回读或网络重试"
+        case unmatched = "缺少当前相册的有效对应记录"
+        case failed = "回读核验或文件释放失败"
+        case unprocessed = "尚未核验"
+        case otherLibrary = "其他图库目录"
     }
 
-    func releaseVerified(library: PhotoSyncLibrary, progress: (Int, Int) -> Void) async throws -> ReleaseSummary {
+    struct ReleaseSummary {
+        struct Amount {
+            var count = 0
+            var bytes: Int64 = 0
+        }
+
+        private(set) var amounts: [ReleaseStatus: Amount] = [:]
+
+        mutating func add(_ status: ReleaseStatus, bytes: Int64) {
+            amounts[status, default: Amount()].count += 1
+            amounts[status, default: Amount()].bytes += bytes
+        }
+    }
+
+    private func archiveFiles(at root: URL) throws -> [(name: String, bytes: Int64)] {
+        let directory = root.appendingPathComponent("AlbumOriginals", isDirectory: true)
+        guard manager.fileExists(atPath: directory.path) else { return [] }
+        let attributes = try directory.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey])
+        guard attributes.isSymbolicLink == false, attributes.isDirectory == true else { throw MediaError193.verification }
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .totalFileAllocatedSizeKey, .fileSizeKey]
+        return try manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: Array(keys)).compactMap { url in
+            let values = try url.resourceValues(forKeys: keys)
+            guard values.isRegularFile == true, values.isSymbolicLink == false else { return nil }
+            return (url.lastPathComponent, Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0))
+        }
+    }
+
+    func releaseVerified(library: PhotoSyncLibrary, allowICloud: Bool,
+                         progress: (Int, Int) -> Void) async throws -> ReleaseSummary {
         try check()
-        let candidates = try library.albumContents(PhotoSyncLibrary.Album.all.identifier, lease: lease).visible
-            .filter { $0.mediaSubtypes.contains(.photoLive) }
-        var result = ReleaseSummary(), processed = Set<String>()
-        for (offset, asset) in candidates.enumerated() {
-            if Task.isCancelled { return result }
-            try check()
-            do {
-                if let original = try self.original(for: asset), let resource = original.resources.first,
-                   !processed.contains(resource.sha256), !(try released(resource)),
-                   manager.fileExists(atPath: try file(resource, createDirectory: false).path) {
-                    let native = try await library.read(asset, lease: lease, allowICloud: false)
-                    guard native.live,
-                          let current = try library.select([asset.localIdentifier], lease: lease).visible.first,
-                          NativeAssetRevision.same(asset, current),
-                          try self.original(for: current)?.transferKey == original.transferKey
-                          else { throw MediaError193.verification }
-                    if Task.isCancelled { return result }
-                    let bytes = try releaseCopy(resource)
-                    processed.insert(resource.sha256)
-                    if bytes > 0 { result.count += 1; result.bytes += bytes }
-                }
-            } catch {
-                try check()
-                result.unverified += 1
+        let files = try archiveFiles(at: storage.root)
+        let names = Set(files.map { $0.name })
+        let visible = files.isEmpty ? [] : try library.albumContents(PhotoSyncLibrary.Album.all.identifier, lease: lease).visible
+        var byArchive: [String: [(asset: PHAsset, original: MobileAlbumManifest)]] = [:]
+        for asset in visible where asset.mediaSubtypes.contains(.photoLive) {
+            if Task.isCancelled { break }
+            guard let original = try? self.original(for: asset), let resource = original.resources.first else { continue }
+            let name = resource.sha256 + ".nca"
+            if names.contains(name) { byArchive[name, default: []].append((asset, original)) }
+        }
+        var result = ReleaseSummary()
+        let parent = storage.root.deletingLastPathComponent()
+        for name in ["Nocturne", "NocturneOrdinary193", "NocturnePrivate193"] {
+            let sibling = parent.appendingPathComponent(name, isDirectory: true)
+            guard sibling.standardizedFileURL.path != storage.root.standardizedFileURL.path,
+                  let other = try? archiveFiles(at: sibling) else { continue }
+            for file in other { result.add(.otherLibrary, bytes: file.bytes) }
+        }
+        for (offset, file) in files.enumerated() {
+            if Task.isCancelled {
+                for remaining in files[offset...] { result.add(.unprocessed, bytes: remaining.bytes) }
+                break
             }
-            if offset % 8 == 0 || offset + 1 == candidates.count { progress(offset + 1, candidates.count) }
+            let status: ReleaseStatus
+            if let candidates = byArchive[file.name] {
+                status = try await releaseVerifiedCopy(candidates, library: library, allowICloud: allowICloud)
+            } else {
+                status = .unmatched
+            }
+            result.add(status, bytes: file.bytes)
+            if offset % 8 == 0 || offset + 1 == files.count { progress(offset + 1, files.count) }
         }
         return result
+    }
+
+    private func releaseVerifiedCopy(_ candidates: [(asset: PHAsset, original: MobileAlbumManifest)],
+                                     library: PhotoSyncLibrary, allowICloud: Bool) async throws -> ReleaseStatus {
+        var networkRequired = false
+        for (asset, original) in candidates {
+            do {
+                let native = try await library.read(asset, lease: lease, allowICloud: allowICloud)
+                guard native.live, let resource = original.resources.first,
+                      let current = try library.select([asset.localIdentifier], lease: lease).visible.first,
+                      NativeAssetRevision.same(asset, current),
+                      try self.original(for: current)?.transferKey == original.transferKey
+                      else { continue }
+                try check()
+                let bytes = try releaseCopy(resource)
+                if bytes > 0 { return .released }
+                if try released(resource) { return .released }
+            } catch let error as PHPhotosError where error.code == .networkAccessRequired || error.code == .networkError {
+                networkRequired = true
+            } catch {
+                if Task.isCancelled { return .unprocessed }
+                try check()
+            }
+        }
+        return networkRequired ? .needsNetwork : .failed
     }
 
     func verify(_ resource: PhotoSyncLibrary.Resource) throws {
