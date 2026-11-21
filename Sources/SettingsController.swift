@@ -150,8 +150,26 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         if id == "releaseMotionArchive" { cell.detailTextLabel?.text = archiveProgress }
         #endif
         cell.textLabel?.text = label(id); cell.textLabel?.font = .systemFont(ofSize: 14); cell.textLabel?.numberOfLines = 2
-        let switches = ["square": p.squareTiles, "squareCorners": p.roundedSquare, "motion": p.reducedMotion, "names": p.groupDates199 ?? true, "views": p.showViews, "duration": p.showDuration, "preview": p.previewVideos, "date": p.showDate122 ?? true, "hold": p.holdSpeed122 ?? true, "openMark": p.openAtMarker122 ?? true, "markLoop": p.markerPreview122 ?? false, "filmstrip": p.showFilmstrip204 ?? true, "swipeDismiss": p.swipeDismiss199 ?? true, "viewerMuted": p.viewerMuted204 ?? false, "videoDoubleTap": p.videoDoubleTap204 ?? true, "viewerAll": p.viewerBackgroundAll122 ?? true]
-        var switchValue = switches[id]
+        var switchValue: Bool?
+        switch id {
+        case "square": switchValue = p.squareTiles
+        case "squareCorners": switchValue = p.roundedSquare
+        case "motion": switchValue = p.reducedMotion
+        case "names": switchValue = p.groupDates199 ?? true
+        case "views": switchValue = p.showViews
+        case "duration": switchValue = p.showDuration
+        case "preview": switchValue = p.previewVideos
+        case "date": switchValue = p.showDate122 ?? true
+        case "hold": switchValue = p.holdSpeed122 ?? true
+        case "openMark": switchValue = p.openAtMarker122 ?? true
+        case "markLoop": switchValue = p.markerPreview122 ?? false
+        case "filmstrip": switchValue = p.showFilmstrip204 ?? true
+        case "swipeDismiss": switchValue = p.swipeDismiss199 ?? true
+        case "viewerMuted": switchValue = p.viewerMuted204 ?? false
+        case "videoDoubleTap": switchValue = p.videoDoubleTap204 ?? true
+        case "viewerAll": switchValue = p.viewerBackgroundAll122 ?? true
+        default: switchValue = nil
+        }
         #if !NOCTURNE_LEGACY
         if #available(iOS 16.2, *) {
             if id == "activityCache" { switchValue = NocturneTaskActivity.wants(.cache) }
