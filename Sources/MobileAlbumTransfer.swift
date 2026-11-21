@@ -248,11 +248,19 @@ enum MobileAlbumTransfer {
     }
 
     static func previewReceive(_ target: PhotoAlbumTarget, channel: Channel, progress: (Int, Int, Int) -> Void = { _, _, _ in }) async throws -> PreviewTotals {
+        try await previewReceive(channel: channel, start: { count, unavailable in
+            try await target.start(count: count, unavailable: unavailable)
+        }, choose: target.preview, progress: progress)
+    }
+
+    static func previewReceive(channel: Channel, start: (Int, Int) async throws -> Void,
+                               choose: (MobileAlbumManifest.Page) throws -> PreviewSelection,
+                               progress: (Int, Int, Int) -> Void) async throws -> PreviewTotals {
         let open = try await expect(channel, kind: 1, operation: "album-preview-open1")
         guard let count = open["count"] as? Int, (0...maximumCount).contains(count),
               let unavailable = open["unavailable"] as? Int, (0...(maximumCount - count)).contains(unavailable)
               else { throw MediaError193.malformed }
-        try await withWaiting(channel) { try await target.start(count: count, unavailable: unavailable) }
+        try await withWaiting(channel) { try await start(count, unavailable) }
         try await channel.sendObject(2, ["op": "album-preview-ready1"])
         var totals = PreviewTotals(), seen = Set<String>(), pages = Set<String>()
         totals.deferred = unavailable
@@ -270,7 +278,7 @@ enum MobileAlbumTransfer {
             try verify(page, count: count, seen: &seen, pages: &pages)
             progress(seen.count - page.assets.count, page.assets.count, count)
             let items = Dictionary(uniqueKeysWithValues: page.assets.map { ($0.id, $0) })
-            let choice = try target.preview(page)
+            let choice = try choose(page)
             try totals.record(choice, page: page, items: items)
             progress(seen.count, 0, count)
             try await channel.sendObject(2, packetFor("album-preview-result1", page: page.id, fields: [

@@ -238,6 +238,75 @@ final class XiaomiOriginalArchive {
         return networkRequired ? .needsNetwork : .failed
     }
 
+    final class AndroidAudit {
+        struct Candidate {
+            let originalBytes: Int64
+            let allocatedBytes: Int64
+        }
+        fileprivate let candidates: [String: Candidate]
+        let archiveCount: Int
+        private(set) var matches: [String: PhotoSyncLibrary.Resource] = [:]
+
+        fileprivate init(candidates: [String: Candidate], archiveCount: Int) {
+            self.candidates = candidates
+            self.archiveCount = archiveCount
+        }
+
+        var matchedBytes: Int64 { matches.keys.reduce(0) { $0 + (candidates[$1]?.allocatedBytes ?? 0) } }
+
+        func compare(_ page: MobileAlbumManifest.Page) -> MobileAlbumTransfer.PreviewSelection {
+            var duplicates = 0
+            for item in page.assets {
+                var found = false
+                for part in item.resources where candidates[part.sha256]?.originalBytes == part.bytes {
+                    matches[part.sha256] = part
+                    found = true
+                }
+                if found { duplicates += 1 }
+            }
+            return .init(pending: [], duplicates: duplicates, deferred: page.assets.count - duplicates)
+        }
+    }
+
+    func androidAudit() throws -> AndroidAudit {
+        try check()
+        let files = try archiveFiles(at: storage.root)
+        var candidates: [String: AndroidAudit.Candidate] = [:]
+        for file in files where file.name.hasSuffix(".nca") {
+            try check()
+            let digest = String(file.name.dropLast(4))
+            guard AppleSyncTransport.isHex(digest, length: 64),
+                  let data = try storage.albumSyncRecord(record("raw", digest), lease: lease),
+                  let registered = try? JSONDecoder().decode(Stored.self, from: data),
+                  registered.sha256 == digest, registered.key.count == 32,
+                  (1...PhotoSyncLibrary.maximumAssetBytes).contains(registered.bytes) else { continue }
+            candidates[digest] = .init(originalBytes: registered.bytes, allocatedBytes: file.bytes)
+        }
+        return AndroidAudit(candidates: candidates, archiveCount: files.count)
+    }
+
+    func releaseAndroidMatchesInBackground(_ audit: AndroidAudit) async throws -> ReleaseSummary {
+        let worker = Task.detached(priority: .utility) { try self.releaseAndroidMatches(audit) }
+        return try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
+    }
+
+    func releaseAndroidMatches(_ audit: AndroidAudit) throws -> ReleaseSummary {
+        var result = ReleaseSummary()
+        for (digest, resource) in audit.matches {
+            if Task.isCancelled { break }
+            try check()
+            do {
+                let bytes = try releaseCopy(resource)
+                if bytes > 0 { result.add(.released, bytes: bytes) }
+            } catch {
+                if Task.isCancelled { break }
+                try check()
+                result.add(.failed, bytes: audit.candidates[digest]?.allocatedBytes ?? 0)
+            }
+        }
+        return result
+    }
+
     func verify(_ resource: PhotoSyncLibrary.Resource) throws {
         guard let stored = try registration(resource) else { throw MediaError193.unavailable }
         try copy(stored, from: file(resource, createDirectory: false), to: nil)

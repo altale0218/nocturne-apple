@@ -67,7 +67,21 @@ final class NocturneTests: XCTestCase {
 
         let sealed = directory.appendingPathComponent("AlbumOriginals").appendingPathComponent(descriptor.sha256 + ".nca")
         XCTAssertFalse(try archive.released(descriptor))
-        XCTAssertGreaterThan(try archive.releaseCopy(descriptor), 0)
+        let audit = try archive.androidAudit()
+        let different = PhotoSyncLibrary.Resource(role: 1, filename: descriptor.filename, uti: descriptor.uti,
+                                                  bytes: descriptor.bytes - 1, sha256: descriptor.sha256)
+        let mismatch = try MobileAlbumManifest(id: String(repeating: "a", count: 32), layout: .image,
+                                                captureMillis: nil, location: nil, favorite: false, resources: [different])
+        let exact = try MobileAlbumManifest(id: String(repeating: "b", count: 32), layout: .image,
+                                             captureMillis: nil, location: nil, favorite: false, resources: [descriptor])
+        let page = MobileAlbumManifest.Page(schema: MobileAlbumManifest.schema, id: String(repeating: "c", count: 32),
+                                            assets: [mismatch, exact])
+        let preview = audit.compare(page)
+        XCTAssertTrue(preview.pending.isEmpty)
+        XCTAssertEqual(preview.duplicates, 1)
+        XCTAssertEqual(preview.deferred, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sealed.path))
+        XCTAssertEqual(try archive.releaseAndroidMatches(audit).amounts[.released]?.count, 1)
         XCTAssertTrue(try archive.released(descriptor))
         XCTAssertFalse(FileManager.default.fileExists(atPath: sealed.path))
         XCTAssertEqual(try archive.releaseCopy(descriptor), 0)

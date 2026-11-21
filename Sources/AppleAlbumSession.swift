@@ -238,7 +238,8 @@ private struct AppleAlbumSession {
                               catalog: TransferCatalog, album: PhotoSyncLibrary.Album, allowICloud: Bool,
                               androidTarget: String?, androidSource: String?, receiveAllAndroid: Bool,
                               resuming: Bool, approvePreview: @escaping (String) async -> Bool,
-                              progress: @escaping (TransferStatus) -> Void) async throws -> String {
+                              progress: @escaping (TransferStatus) -> Void,
+                              archiveAudit: XiaomiOriginalArchive.AndroidAudit? = nil) async throws -> String {
         try Task.checkCancellation()
         try storage.validateResourceLease193(lease)
         progress(TransferStatus(message: "等待 Android 确认相册范围…"))
@@ -296,7 +297,7 @@ private struct AppleAlbumSession {
                     }
                 }
             }
-            if catalog.target == nil && (androidSource != nil || receiveAllAndroid) {
+            if archiveAudit == nil && catalog.target == nil && (androidSource != nil || receiveAllAndroid) {
                 catalog.target = PhotoAlbumTarget(storage: storage, albumID: album.identifier, peer: peer.identity.id,
                     lease: lease, allowICloud: allowICloud, prepared: catalog.source) { done, total in
                     progress(TransferStatus(message: "核对本机相册原件 \(done)/\(total)", itemProgress: Self.itemProgress(done, total), preparation: 2))
@@ -311,7 +312,12 @@ private struct AppleAlbumSession {
                 }
                 source.rewindForReconnect()
             }
-            if let target = catalog.target {
+            if let archiveAudit {
+                _ = try await MobileAlbumTransfer.previewReceive(channel: channel, start: { _, _ in },
+                    choose: archiveAudit.compare) { done, active, total in
+                    progress(TransferStatus(message: "正在比对归档指纹 · \(done)/\(total)", itemProgress: Self.itemProgress(done, total)))
+                }
+            } else if let target = catalog.target {
                 inbound = try await MobileAlbumTransfer.previewReceive(target, channel: channel) { done, active, total in
                     progress(TransferStatus(message: "核对接收项目 · 已查 \(done) · 正在核对 \(active) · 待查 \(max(0, total - done - active))", itemProgress: Self.itemProgress(done, total), preparation: 2))
                 }
@@ -333,6 +339,17 @@ private struct AppleAlbumSession {
             guard result["op"] as? String == "album-probe-rate1",
                   let incomingRate = result["rate"] as? Int64, (1...524_288_000).contains(incomingRate)
                   else { throw MediaError193.malformed }
+            if archiveAudit != nil {
+                stage = "等待 Android 结束仅核验会话"
+                progress(TransferStatus(message: "指纹核验已完成。若 Android 显示传输确认，请点击取消。"))
+                try await channel.sendObject(1, ["op": "album-preview-rate1", "rate": outgoingRate])
+                try await channel.sendObject(1, ["op": "album-preview-confirm1", "approved": false])
+                let reply = try await channel.receiveObject(2)
+                guard reply["op"] as? String == "album-preview-confirm1", reply["approved"] as? Bool == false
+                      else { throw MediaError193.verification }
+                await channel.close()
+                return ""
+            }
             stage = "等待双方确认同步报告"
             let report = Self.previewReport(outbound, inbound, outgoingRate, incomingRate)
             try await channel.sendObject(1, ["op": "album-preview-rate1", "rate": outgoingRate])
@@ -410,6 +427,14 @@ private struct AppleAlbumSession {
         }
     }
 
+    func verifyArchiveBackups(peer: AppleSyncTransport.Peer, local: AppleSyncTransport.Identity,
+                              audit: XiaomiOriginalArchive.AndroidAudit,
+                              progress: @escaping (TransferStatus) -> Void) async throws {
+        _ = try await transferPass(peer: peer, local: local, catalog: TransferCatalog(), album: .all, allowICloud: false,
+            androidTarget: nil, androidSource: nil, receiveAllAndroid: true, resuming: false,
+            approvePreview: { _ in false }, progress: progress, archiveAudit: audit)
+    }
+
     private static func itemProgress(_ checked: Int, _ total: Int) -> Float? {
         guard total > 0, (0...total).contains(checked) else { return nil }
         return Float(checked) / Float(total)
@@ -445,6 +470,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
     private var visibleForDiscovery = false
     private let storage: SecureStorage
     private let pairing = UIButton(type: .system), start = UIButton(type: .system)
+    private let verifyArchives = UIButton(type: .system)
     private let connectDevice = UIButton(type: .system)
     private let searchDevices = UIButton(type: .system)
     private let discoveryStatus = UILabel()
@@ -582,8 +608,11 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
                                                name: UIApplication.didEnterBackgroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(startDiscovery),
                                                name: UIApplication.didBecomeActiveNotification, object: nil)
+        verifyArchives.configuration = Self.action(title: "核验 Android 原件备份", symbol: "checkmark.shield")
+        verifyArchives.addTarget(self, action: #selector(checkAndroidArchives), for: .touchUpInside)
         let albumCard = Self.card("同步范围", fields: [
-            Self.label("双向核对全部照片和视频。Android 收到的项目会放入 Nocturne 相册；同步可能从 iCloud 下载原片。不会删除原片。", style: .subheadline)
+            Self.label("双向核对全部照片和视频。Android 收到的项目会放入 Nocturne 相册；同步可能从 iCloud 下载原片。不会删除原片。", style: .subheadline),
+            verifyArchives
         ])
         syncOptions = albumCard
         let scroll = UIScrollView()
@@ -982,7 +1011,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
 
     private func setBusy(_ running: Bool) {
         nearbyDevices.isUserInteractionEnabled = !running
-        let controls: [UIControl] = [address, pages, pairing, connectDevice, start, searchDevices]
+        let controls: [UIControl] = [address, pages, pairing, connectDevice, start, searchDevices, verifyArchives]
         controls.forEach { $0.isEnabled = !running }
         chooseAnother.isEnabled = !running
         navigationController?.isModalInPresentation = running
@@ -1057,6 +1086,7 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
         connectionOptions?.isHidden = true
         syncOptions?.isHidden = !hasSelection || (!connected && !canResume)
         start.isHidden = !hasSelection || (!connected && !canResume)
+        verifyArchives.isHidden = !connected
         start.configuration?.title = canResume ? "重新核对" : "核对并预估"
         refreshNearbyDevices()
     }
@@ -1227,6 +1257,63 @@ final class AppleAlbumSyncController: UIViewController, NetServiceBrowserDelegat
 
     private func replyToCode(_ accepted: Bool) {
         if let reply = codeReply { codeReply = nil; reply.resume(returning: accepted) }
+    }
+
+    @objc private func checkAndroidArchives() {
+        let ip = enteredAddress
+        guard verifiedAddress == ip, canReceiveOrdinaryLibrary, let peerID = verifiedPeerID else {
+            status.text = "请先连接装有 Nocturne 的已配对 Android 设备。"
+            return
+        }
+        task(keepsScreenAwake: true) {
+            let lease = try self.storage.resourceLease193()
+            let session = AppleAlbumSession(storage: self.storage, lease: lease)
+            let settings = try session.settings()
+            guard let paired = settings.trustedPeers.first(where: { $0.id == peerID }) else {
+                throw AppleSyncTransport.Failure.authentication
+            }
+            self.status.text = "正在盘点本机归档…"
+            let archive = XiaomiOriginalArchive(storage: self.storage, lease: lease)
+            let audit = try await Task.detached(priority: .utility) { try archive.androidAudit() }.value
+            try Task.checkCancellation()
+            guard audit.archiveCount > 0 else {
+                self.status.text = "当前图库没有待核验的归档。"
+                return
+            }
+            let statusEpoch = self.statusEpoch
+            try await session.verifyArchiveBackups(peer: paired.connect(address: ip), local: session.local(settings), audit: audit) { [weak self] update in
+                DispatchQueue.main.async {
+                    guard let self, self.statusEpoch == statusEpoch else { return }
+                    self.showTransfer(update)
+                }
+            }
+            try Task.checkCancellation()
+            let matched = audit.matches.count
+            let unmatched = audit.archiveCount - matched
+            let size = ByteCountFormatter.string(fromByteCount: audit.matchedBytes, countStyle: .file)
+            let report = "Android 已核验 \(matched) 份 · 约 \(size)\n保留未匹配归档 \(unmatched) 份。"
+            self.status.text = report
+            guard matched > 0, await self.confirmArchiveDeletion(report, device: paired.name) else { return }
+            try Task.checkCancellation()
+            let result = try await archive.releaseAndroidMatchesInBackground(audit)
+            let released = result.amounts[.released]
+            let bytes = ByteCountFormatter.string(fromByteCount: released?.bytes ?? 0, countStyle: .file)
+            let left = audit.archiveCount - (released?.count ?? 0)
+            self.status.text = "已释放 \(released?.count ?? 0) 份 · \(bytes)。本次未释放 \(left) 份。"
+        }
+    }
+
+    private func confirmArchiveDeletion(_ report: String, device: String) async -> Bool {
+        guard viewIfLoaded?.window != nil, presentedViewController == nil, !Task.isCancelled else { return false }
+        return await withCheckedContinuation { reply in
+            codeReply = reply
+            let alert = UIAlertController(title: "释放 iPhone 上已核验的归档？",
+                message: report + "\n\n释放后，Android 原件将保留在「\(device)」。请保留该设备上的原件或另行备份。",
+                preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "取消", style: .cancel) { [weak self] _ in self?.replyToCode(false) })
+            alert.addAction(UIAlertAction(title: "释放已核验归档", style: .destructive) { [weak self] _ in self?.replyToCode(true) })
+            present(alert, animated: true)
+        }
     }
 
     @objc private func run() {
