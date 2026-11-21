@@ -20,6 +20,7 @@ final class XiaomiOriginalArchive {
     private let lease: Int
     private let manager = FileManager.default
     private static let chunkSize = 1_048_576
+    private static let releaseGate = NSLock()
 
     init(storage: SecureStorage, lease: Int) {
         self.storage = storage
@@ -108,6 +109,69 @@ final class XiaomiOriginalArchive {
         try output.synchronize()
         try check()
         try manager.moveItem(at: temp, to: final)
+    }
+
+    func released(_ resource: PhotoSyncLibrary.Resource) throws -> Bool {
+        try check()
+        try resource.validate()
+        guard try storage.albumSyncRecord(record("released", resource.sha256), lease: lease) == Data([1]) else { return false }
+        return !manager.fileExists(atPath: storage.root.appendingPathComponent("AlbumOriginals")
+            .appendingPathComponent(resource.sha256 + ".nca").path)
+    }
+
+    /// The caller must have just read the native Live Photo and revalidated its revision.
+    func releaseCopy(_ resource: PhotoSyncLibrary.Resource) throws -> Int64 {
+        Self.releaseGate.lock()
+        defer { Self.releaseGate.unlock() }
+        guard let stored = try registration(resource), !(try released(resource)) else { return 0 }
+        let url = try file(resource, createDirectory: false)
+        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .totalFileAllocatedSizeKey])
+        let chunks = (stored.bytes + Int64(Self.chunkSize) - 1) / Int64(Self.chunkSize)
+        guard values.isRegularFile == true, values.isSymbolicLink == false,
+              values.fileSize.map({ Int64($0) }) == stored.bytes + chunks * 28 else { throw MediaError193.verification }
+        // Persist the intentional-release record first. If removal fails, the file still wins.
+        try storage.writeAlbumSyncRecord(Data([1]), name: record("released", resource.sha256), lease: lease)
+        try check()
+        try manager.removeItem(at: url)
+        return Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0)
+    }
+
+    struct ReleaseSummary {
+        var count = 0
+        var bytes: Int64 = 0
+        var unverified = 0
+    }
+
+    func releaseVerified(library: PhotoSyncLibrary, progress: (Int, Int) -> Void) async throws -> ReleaseSummary {
+        try check()
+        let candidates = try library.albumContents(PhotoSyncLibrary.Album.all.identifier, lease: lease).visible
+            .filter { $0.mediaSubtypes.contains(.photoLive) }
+        var result = ReleaseSummary(), processed = Set<String>()
+        for (offset, asset) in candidates.enumerated() {
+            if Task.isCancelled { return result }
+            try check()
+            do {
+                if let original = try self.original(for: asset), let resource = original.resources.first,
+                   !processed.contains(resource.sha256), !(try released(resource)),
+                   manager.fileExists(atPath: try file(resource, createDirectory: false).path) {
+                    let native = try await library.read(asset, lease: lease, allowICloud: false)
+                    guard native.live,
+                          let current = try library.select([asset.localIdentifier], lease: lease).visible.first,
+                          NativeAssetRevision.same(asset, current),
+                          try self.original(for: current)?.transferKey == original.transferKey
+                          else { throw MediaError193.verification }
+                    if Task.isCancelled { return result }
+                    let bytes = try releaseCopy(resource)
+                    processed.insert(resource.sha256)
+                    if bytes > 0 { result.count += 1; result.bytes += bytes }
+                }
+            } catch {
+                try check()
+                result.unverified += 1
+            }
+            if offset % 8 == 0 || offset + 1 == candidates.count { progress(offset + 1, candidates.count) }
+        }
+        return result
     }
 
     func verify(_ resource: PhotoSyncLibrary.Resource) throws {

@@ -12,6 +12,10 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
     private var searchRefresh: DispatchWorkItem?
     private var changingPassword = false
     private var selectedSetting: IndexPath?
+    #if !NOCTURNE_LEGACY
+    private var archiveCleanup: Task<Void, Never>?
+    private var archiveProgress: String?
+    #endif
     init(storage: SecureStorage) { self.storage = storage; if #available(iOS 13, *) { super.init(style: .insetGrouped) } else { super.init(style: .grouped) } }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func viewDidLoad() {
@@ -37,14 +41,18 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
                     ["size", "square", "names", "views", "duration"],
                     ["filmstrip", "swipeDismiss", "blur", "viewerAll", "date", "fine"],
                     ["videoDoubleTap", "viewerMuted", "hold", "openMark"],
-                    ["preview"], ["mode", "boundary", "privacy"], ["release"]]
+                    ["preview"], ["mode", "boundary", "privacy"], []]
         sections[6].append("storageAudit")
         if #available(iOS 15, *) { sections[6].append("crashReport") }
         if p.squareTiles { sections[1].insert("squareCorners", at: 2) }
-        if storage.envelope.privateMode { sections[5].insert(contentsOf: ["password", "biometric"], at: 1) }
+        if storage.envelope.privateMode {
+            sections[5].insert(contentsOf: ["password", "biometric"], at: 1)
+            sections[6].append("localReleaseNotes")
+        }
         #if !NOCTURNE_LEGACY
+        if !storage.envelope.privateMode { sections[6].append("releaseMotionArchive") }
         if #available(iOS 16.2, *), !storage.envelope.privateMode {
-            if NocturneTaskActivity.shipped { sections[4].append(contentsOf: ["activityCache", "activitySync"]) }
+            if NocturneTaskActivity.shipped { sections[4].append(contentsOf: ["activityCache", "activitySync", "activityTest"]) }
             else { sections[4].append("activityUnavailable") }
         }
         #endif
@@ -81,7 +89,7 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         titles = [Strings.text("外观", "Appearance", "外観", "外觀"), Strings.text("主页", "Gallery", "ギャラリー", "主頁"),
                   Strings.text("查看器", "Viewer", "ビューアー", "檢視器"), Strings.text("播放", "Playback", "再生", "播放"),
                   Strings.text("性能", "Performance", "性能", "效能"), "Private · " + Strings.text("隐私", "Privacy", "プライバシー", "隱私"),
-                  Strings.text("软件更新", "Software updates", "ソフトウェア更新", "軟體更新")]
+                  Strings.text("存储与诊断", "Storage and diagnostics", "ストレージと診断", "儲存與診斷")]
 
     }
     override func numberOfSections(in tableView: UITableView) -> Int { sections.count }
@@ -119,6 +127,8 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         case "sync": return Strings.text("开启自动同步", "Sync on open", "起動時に同期", "開啟自動同步")
         case "activityCache": return "实时活动 · 缩略图准备"
         case "activitySync": return "实时活动 · 图库同步"
+        case "activityTest": return "测试灵动岛 · 20 秒"
+        case "releaseMotionArchive": return "释放实况原件归档"
         case "activityUnavailable": return "实时活动 · 当前安装包未包含扩展"
         case "preview": return Strings.text("同时预览视频", "Video previews", "動画プレビュー", "同時預覽影片")
         case "limit": return Strings.text("并行视频上限", "Preview limit", "同時動画の上限", "並行影片上限")
@@ -136,6 +146,9 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
             ?? UITableViewCell(style: .value1, reuseIdentifier: "setting")
         let id = sections[indexPath.section][indexPath.row], p = storage.state.settings
         cell.detailTextLabel?.text = nil
+        #if !NOCTURNE_LEGACY
+        if id == "releaseMotionArchive" { cell.detailTextLabel?.text = archiveProgress }
+        #endif
         cell.textLabel?.text = label(id); cell.textLabel?.font = .systemFont(ofSize: 14); cell.textLabel?.numberOfLines = 2
         let switches = ["square": p.squareTiles, "squareCorners": p.roundedSquare, "motion": p.reducedMotion, "names": p.groupDates199 ?? true, "views": p.showViews, "duration": p.showDuration, "preview": p.previewVideos, "date": p.showDate122 ?? true, "hold": p.holdSpeed122 ?? true, "openMark": p.openAtMarker122 ?? true, "markLoop": p.markerPreview122 ?? false, "filmstrip": p.showFilmstrip204 ?? true, "swipeDismiss": p.swipeDismiss199 ?? true, "viewerMuted": p.viewerMuted204 ?? false, "videoDoubleTap": p.videoDoubleTap204 ?? true, "viewerAll": p.viewerBackgroundAll122 ?? true]
         var switchValue = switches[id]
@@ -248,12 +261,81 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         case "mode": changeMode()
         case "boundary": message(label(id), Strings.text("缓存始终经过认证加密。Private 增加每次开启的密码验证，影响解锁耗时；不会逐帧验证密码或降低原片分辨率。系统相册中的原片仍由系统管理，不会因为开启 Private 自动隐藏或加密复制。本工程未经过安全审计。", "Caches always use authenticated encryption. Private adds startup password verification, affecting unlock time, not per-frame playback or original resolution. Originals in Photos remain managed by the system and are not hidden or copied by enabling Private. This engineering preview has not had a security audit.", "キャッシュは常に認証付き暗号化。Private は起動時のパスワード検証を追加し、解除時間に影響します。フレーム処理や元画像の解像度は変えません。システム写真の元ファイルは自動的に非表示や複製になりません。セキュリティ監査は未実施です。", "快取始終使用驗證加密。Private 增加啟動密碼驗證，影響解鎖時間，不影響逐幀播放與原片解析度。系統相簿原片不會自動隱藏或加密複製。本工程未經安全審計。"))
         case "activityUnavailable": message("实时活动", "此安装包省略了实时活动扩展。请安装保留扩展的完整 IPA，并在 iOS 的 Nocturne 设置中允许实时活动。")
+        #if !NOCTURNE_LEGACY
+        case "activityTest":
+            if #available(iOS 16.2, *) {
+                guard NocturneTaskActivity.systemEnabled else {
+                    message(label(id), "请到 iOS 的 Nocturne 设置中允许实时活动，再重试。")
+                    return
+                }
+                do { try NocturneTaskActivity.startTest() }
+                catch { message(label(id), "iOS 未能启动实时活动。请检查系统设置后重试。") }
+            }
+        case "releaseMotionArchive": confirmArchiveRelease()
+        #endif
         case "storageAudit": showStorageAudit()
         case "crashReport": if #available(iOS 15, *) { CrashReports209.shared.present(from: self) }
-        case "release": if !storage.envelope.privateMode { navigationController?.pushViewController(AppleUpdateController(), animated: true) } else { showReleaseNotes() }
+        case "localReleaseNotes": message("Nocturne · " + Release.version, Release.notes + "\n\n" + Release.history)
         default: break
         }
     }
+    #if !NOCTURNE_LEGACY
+    private func confirmArchiveRelease() {
+        if archiveCleanup != nil {
+            let running = UIAlertController(title: "正在核验实况照片", message: archiveProgress, preferredStyle: .alert)
+            running.addAction(UIAlertAction(title: "继续核验", style: .cancel))
+            running.addAction(UIAlertAction(title: "停止核验", style: .default) { [weak self] _ in self?.archiveCleanup?.cancel() })
+            present(running, animated: true)
+            return
+        }
+        guard let lease = try? storage.resourceLease193() else { return }
+        let alert = UIAlertController(title: "释放实况原件归档？",
+            message: "仅释放已核验保存在系统相册中的实况照片所对应的 Android 原件副本。保留系统实况和查重记录。日后如需逐字节还原 Android 文件，请保留 Android 原件或另外备份。",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: Strings.cancel, style: .cancel))
+        alert.addAction(UIAlertAction(title: "核验并释放", style: .destructive) { [weak self] _ in
+            self?.releaseArchive(lease: lease)
+        })
+        present(alert, animated: true)
+    }
+
+    private func releaseArchive(lease: Int) {
+        let storage = self.storage
+        showArchiveProgress("正在读取相册")
+        archiveCleanup = Task.detached(priority: .utility) { [weak self] in
+            let archive = XiaomiOriginalArchive(storage: storage, lease: lease)
+            let result: String
+            do {
+                let summary = try await archive.releaseVerified(library: PhotoSyncLibrary(storage: storage)) { [weak self] done, total in
+                    DispatchQueue.main.async { self?.showArchiveProgress("核验 \(done) / \(total)") }
+                }
+                let size = ByteCountFormatter.string(fromByteCount: summary.bytes, countStyle: .file)
+                result = (Task.isCancelled ? "已停止核验。" : "") + "已释放 \(summary.count) 份归档，约 \(size)。" +
+                    (summary.unverified == 0 ? "" : "\n保留了 \(summary.unverified) 项未通过核验或无法释放的归档。")
+            } catch {
+                result = Task.isCancelled ? "已停止。可以再次运行以继续核验。" : "未能完成核验。请检查相册访问权限后再试。"
+            }
+            await self?.finishArchiveRelease(result)
+        }
+    }
+
+    private func showArchiveProgress(_ progress: String?) {
+        archiveProgress = progress
+        guard let row = sections[6].firstIndex(of: "releaseMotionArchive") else { return }
+        tableView.cellForRow(at: IndexPath(row: row, section: 6))?.detailTextLabel?.text = progress
+    }
+
+    private func finishArchiveRelease(_ result: String) {
+        archiveCleanup = nil
+        showArchiveProgress(nil)
+        guard viewIfLoaded?.window != nil else { return }
+        if let alert = presentedViewController as? UIAlertController, alert.title == "正在核验实况照片" {
+            alert.dismiss(animated: true) { [weak self] in self?.message("实况原件归档", result) }
+        } else if presentedViewController == nil {
+            message("实况原件归档", result)
+        }
+    }
+    #endif
     private func showStorageAudit() {
         let root = storage.root
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -339,17 +421,6 @@ final class SettingsController: UITableViewController, UIAdaptivePresentationCon
         let change = modeChanged
         navigationItem.searchController?.isActive = false
         dismiss(animated: true) { change?() }
-    }
-    private func showReleaseNotes() {
-        let picker = UIAlertController(title: "更新日志", message: nil, preferredStyle: .alert)
-        picker.addAction(UIAlertAction(title: "当前版本", style: .default) { [weak self] _ in
-            self?.message("Nocturne · " + Release.version, Release.notes)
-        })
-        picker.addAction(UIAlertAction(title: "历史版本", style: .default) { [weak self] _ in
-            self?.message("Apple 版本历史", Release.history)
-        })
-        picker.addAction(UIAlertAction(title: Strings.cancel, style: .cancel))
-        present(picker, animated: true)
     }
 
     private func showPrivacyChoices() {
@@ -591,7 +662,7 @@ private enum AppleUpdateNetwork {
     }
 }
 
-@MainActor private final class AppleUpdateController: UITableViewController {
+@MainActor final class AppleUpdateController: UITableViewController {
     private var channel = UserDefaults.standard.bool(forKey: "update.beta")
     private var source = UserDefaults.standard.string(forKey: "update.source") ?? "auto"
     private var active: Task<Void, Never>?
@@ -607,12 +678,14 @@ private enum AppleUpdateNetwork {
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "软件更新"
+        navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .close, target: self, action: #selector(closeUpdatePage))
         check()
     }
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         if isMovingFromParent || navigationController?.isBeingDismissed == true { active?.cancel(); generation += 1 }
     }
+    @objc private func closeUpdatePage() { dismiss(animated: true) }
     override func numberOfSections(in tableView: UITableView) -> Int { 3 }
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { [3, 3, 2][section] }
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? { ["当前版本","云端更新","更新日志"][section] }

@@ -76,19 +76,22 @@ final class PhotoAlbumSource: MobileAlbumTransfer.Source {
         let asset: PHAsset
         let manifest: MobileAlbumManifest
         let original: PhotoSyncLibrary.Item?
+        var reclaimed = false
     }
     private let library: PhotoSyncLibrary
     private let storage: SecureStorage
     private let lease: Int
     private let allowICloud: Bool
     fileprivate let rows: [Row]
+    private let outgoing: [Row]
     private let byID: [String: Row]
     private var cursor = 0
     private var export: (id: String, zone: PhotoAlbumStaging, urls: [URL])?
     private(set) var confirmed = Set<String>()
     private(set) var unavailable: Int
-    var count: Int { rows.count }
-    var originalBytes: Int64? { rows.reduce(0) { $0 + $1.manifest.byteCount } }
+    var count: Int { outgoing.count }
+    var reclaimedCount: Int { rows.count - outgoing.count }
+    var originalBytes: Int64? { outgoing.reduce(0) { $0 + $1.manifest.byteCount } }
 
     private init(storage: SecureStorage, library: PhotoSyncLibrary, lease: Int, allowICloud: Bool, rows: [Row], unavailable: Int) {
         self.storage = storage
@@ -96,8 +99,10 @@ final class PhotoAlbumSource: MobileAlbumTransfer.Source {
         self.lease = lease
         self.allowICloud = allowICloud
         self.rows = rows
-        self.byID = Dictionary(rows.map { ($0.manifest.id, $0) }, uniquingKeysWith: { first, _ in first })
-        self.unavailable = unavailable
+        let available = rows.filter { !$0.reclaimed }
+        self.outgoing = available
+        self.byID = Dictionary(available.map { ($0.manifest.id, $0) }, uniquingKeysWith: { first, _ in first })
+        self.unavailable = unavailable + rows.count - available.count
     }
 
     static func prepare(storage: SecureStorage, selected: PhotoSyncLibrary.Selection, namespace: String,
@@ -122,14 +127,15 @@ final class PhotoAlbumSource: MobileAlbumTransfer.Source {
                         let manifest = try MobileAlbumManifest(id: id, layout: original.layout, captureMillis: original.captureMillis,
                             location: original.location, favorite: original.favorite, resources: original.resources,
                             embeddedMotion: original.embeddedMotion)
-                        return (offset, Row(asset: asset, manifest: manifest, original: row.original))
+                        return (offset, Row(asset: asset, manifest: manifest, original: row.original, reclaimed: row.reclaimed))
                     }
                     if let related = try archive.original(for: asset) {
                         let archived = try MobileAlbumManifest(id: id, layout: .motion, captureMillis: related.captureMillis,
                             location: related.location, favorite: related.favorite, resources: related.resources,
                             embeddedMotion: related.embeddedMotion)
-                        try archive.verify(archived.resources[0])
-                        return (offset, Row(asset: asset, manifest: archived, original: nil))
+                        let reclaimed = try archive.released(archived.resources[0])
+                        if !reclaimed { try archive.verify(archived.resources[0]) }
+                        return (offset, Row(asset: asset, manifest: archived, original: nil, reclaimed: reclaimed))
                     }
                     let original = try await library.read(asset, lease: lease, allowICloud: allowICloud)
                     return (offset, Row(asset: asset, manifest: try MobileAlbumManifest(id: id, item: original), original: original))
@@ -165,13 +171,13 @@ final class PhotoAlbumSource: MobileAlbumTransfer.Source {
 
     func nextPage() async throws -> MobileAlbumManifest.Page? {
         try storage.validateResourceLease193(lease)
-        if cursor >= rows.count { return nil }
+        if cursor >= outgoing.count { return nil }
         let start = cursor
-        let maximum = min(start + MobileAlbumManifest.pageLimit, rows.count)
+        let maximum = min(start + MobileAlbumManifest.pageLimit, outgoing.count)
         // A RAW or edited asset can carry many resource headers. Size these pages by both entries and encoded bytes.
         var assets: [MobileAlbumManifest] = [], encodedBytes = 128
         while cursor < maximum {
-            let item = rows[cursor].manifest
+            let item = outgoing[cursor].manifest
             let bytes = try JSONEncoder().encode(item).count + 1
             guard bytes < 700_000 else { throw MediaError193.tooLarge }
             if !assets.isEmpty && encodedBytes + bytes > 700_000 { break }
@@ -345,7 +351,7 @@ final class PhotoAlbumTarget: MobileAlbumTransfer.Target {
         index = MobileAlbumManifest.ExactIndex()
         originalAssets.removeAll(keepingCapacity: true)
         verifiedOriginals.removeAll(keepingCapacity: true)
-        localUnverified = known.unavailable
+        localUnverified = known.unavailable - known.reclaimedCount
         for row in known.rows {
             index.add(row.manifest, localID: row.asset.localIdentifier, metadata: try metadataKey(row.manifest))
             originalAssets[row.asset.localIdentifier] = row.asset
@@ -408,7 +414,13 @@ final class PhotoAlbumTarget: MobileAlbumTransfer.Target {
                         guard let original = try archive.relation(peer: peer, peerItem: manifest.id),
                               original.key == manifest.key, original.embeddedMotion == manifest.embeddedMotion
                               else { throw MediaError193.changed }
-                        try archive.verify(manifest.resources[0])
+                        if try archive.released(manifest.resources[0]) {
+                            guard let current = try library.select([receipt.identifier], lease: lease).visible.first,
+                                  try archive.original(for: current)?.transferKey == manifest.transferKey
+                                  else { throw MediaError193.changed }
+                        } else {
+                            try archive.verify(manifest.resources[0])
+                        }
                         native = receipt.item
                     } else {
                         native = try manifest.nativeItem()
@@ -530,6 +542,7 @@ final class PhotoAlbumTarget: MobileAlbumTransfer.Target {
             deferItem(asset, reason: "旧同步归档与对方当前原件不同")
             return true
         }
+        if try archive.released(asset.resources[0]) { return false }
         // The protected original was already committed before a previous Photos import.
         // Restore its verified bytes locally so a retry only repeats the conversion.
         let zone = try PhotoAlbumStaging(storage: storage)
@@ -625,7 +638,7 @@ final class PhotoAlbumTarget: MobileAlbumTransfer.Target {
                   original.captureMillis == manifest.captureMillis, original.favorite == manifest.favorite,
                   original.location == manifest.location, original.embeddedMotion == manifest.embeddedMotion
                   else { throw MediaError193.verification }
-            try archive.verify(manifest.resources[0])
+            if !(try archive.released(manifest.resources[0])) { try archive.verify(manifest.resources[0]) }
             try archive.remember(manifest, peer: peer)
             native = try await library.read(asset, lease: lease)
         } else {

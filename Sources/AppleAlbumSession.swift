@@ -360,7 +360,9 @@ private struct AppleAlbumSession {
                                             inventory: inventory, itemProgress: Self.itemProgress(done, total), direction: .sending))
                 }
                 details.append("Android 确认已存在或成功保存 \(source.confirmed.count) 项；待处理 \(source.count + source.unavailable - source.confirmed.count) 项。")
-                if source.unavailable > 0 { details.append("本机有 \(source.unavailable) 项原件暂不可读，未发送。") }
+                let unreadable = source.unavailable - source.reclaimedCount
+                if unreadable > 0 { details.append("本机有 \(unreadable) 项原件暂不可读，未发送。") }
+                if source.reclaimedCount > 0 { details.append("有 \(source.reclaimedCount) 项实况仅保留 iOS 版本，未回传 Android 原件。") }
             }
             if let target = catalog.target {
                 stage = "接收：核对、下载或写入 iOS 相册"

@@ -10,6 +10,7 @@ final class NocturneTaskActivity {
     private var lastState: State?
     private var operation: Task<Void, Never>?
     private static var cleaned = false
+    private static var demo: Task<Void, Never>?
 
     init(_ kind: NocturneTaskAttributes.Kind) { self.kind = kind }
 
@@ -37,14 +38,35 @@ final class NocturneTaskActivity {
         }
     }
 
+    private static func cleanLeftovers() {
+        guard !cleaned else { return }
+        cleaned = true
+        let leftovers = Activity<NocturneTaskAttributes>.activities
+        Task { for leftover in leftovers { await leftover.end(nil, dismissalPolicy: .immediate) } }
+    }
+
+    @MainActor static func startTest() throws {
+        guard shipped, systemEnabled, UIApplication.shared.applicationState == .active, demo == nil else { return }
+        cleanLeftovers()
+        let start = Date(), end = start.addingTimeInterval(20)
+        let state = State(phase: "实时活动测试", testStart: start, testEnd: end)
+        let activity = try Activity.request(attributes: NocturneTaskAttributes(kind: .test),
+            content: ActivityContent(state: state, staleDate: end, relevanceScore: 100), pushType: nil)
+        let background = UIApplication.shared.beginBackgroundTask(withName: "NocturneLiveActivityTest") {
+            demo?.cancel()
+        }
+        demo = Task {
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            demo = nil
+            await activity.end(nil, dismissalPolicy: .immediate)
+            if background != .invalid { UIApplication.shared.endBackgroundTask(background) }
+        }
+    }
+
     func start(_ phase: String) {
         guard activity == nil, Self.shipped, Self.wants(kind), UIApplication.shared.applicationState == .active,
               Self.systemEnabled else { return }
-        if !Self.cleaned {
-            Self.cleaned = true
-            let leftovers = Activity<NocturneTaskAttributes>.activities
-            Task { for leftover in leftovers { await leftover.end(nil, dismissalPolicy: .immediate) } }
-        }
+        Self.cleanLeftovers()
         let state = State(phase: phase)
         activity = try? Activity.request(attributes: NocturneTaskAttributes(kind: kind),
                                         content: content(state), pushType: nil)

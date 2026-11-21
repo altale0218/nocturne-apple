@@ -737,6 +737,10 @@ final class GalleryController: UIViewController, UICollectionViewDataSource, UIC
                 let navigation = GallerySubpageNavigation(rootViewController: AppleAlbumSyncController(storage: self.storage)); self.present(navigation, animated: true)
             }))
             #endif
+            sidebarRows193.append(("软件更新", "arrow.down.circle", { [weak self] in
+                let navigation = GallerySubpageNavigation(rootViewController: AppleUpdateController())
+                self?.present(navigation, animated: true)
+            }))
         }
         sidebarRows193.append(("浏览器", "globe", { [weak self] in self?.openBrowser() }))
         sidebarRows193.append((Strings.settings, "gearshape", { [weak self] in self?.openSettings193() }))

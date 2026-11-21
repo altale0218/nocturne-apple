@@ -66,6 +66,16 @@ final class NocturneTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: restored), original)
 
         let sealed = directory.appendingPathComponent("AlbumOriginals").appendingPathComponent(descriptor.sha256 + ".nca")
+        XCTAssertFalse(try archive.released(descriptor))
+        XCTAssertGreaterThan(try archive.releaseCopy(descriptor), 0)
+        XCTAssertTrue(try archive.released(descriptor))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sealed.path))
+        XCTAssertEqual(try archive.releaseCopy(descriptor), 0)
+        XCTAssertThrowsError(try archive.verify(descriptor))
+        try archive.preserve(raw, resource: descriptor)
+        XCTAssertFalse(try archive.released(descriptor))
+        try archive.verify(descriptor)
+
         var corrupt = try Data(contentsOf: sealed)
         corrupt[1_048_620] ^= 1
         try corrupt.write(to: sealed, options: [.atomic, .completeFileProtection])
